@@ -1,0 +1,6 @@
+build/
+build-release/
+*.o
+*.a
+*.so
+*.log

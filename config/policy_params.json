@@ -1,0 +1,6 @@
+{
+  "version": "defaults-v1",
+  "weights": {"w_miss": 1.0, "w_reuse": 1.0, "w_mem": 1.0, "w_risk": 1.0},
+  "thresholds": {"admit_threshold": 0.0, "evict_pressure": 0.85},
+  "guardrails": {"max_evictions_per_second": 10000, "max_admissions_per_second": 10000}
+}
