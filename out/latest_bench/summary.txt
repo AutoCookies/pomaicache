@@ -1,0 +1,6 @@
+ops/s=294755.88 p50_us=322.93 p95_us=514.43 p99_us=733.35 p999_us=20556.19 hit_rate=0.00 memory_used=0 evictions=0 admissions_rejected=0
+ops/s=290947.38 p50_us=332.58 p95_us=515.27 p99_us=699.71 p999_us=22210.20 hit_rate=0.00 memory_used=0 evictions=0 admissions_rejected=0
+ops/s=169986.12 p50_us=512.65 p95_us=891.38 p99_us=1854.37 p999_us=29491.37 hit_rate=0.99 memory_used=1280000 evictions=0 admissions_rejected=1291068
+ops/s=196872.62 p50_us=479.50 p95_us=762.88 p99_us=1531.03 p999_us=24004.05 hit_rate=1.00 memory_used=1280000 evictions=0 admissions_rejected=1897943
+ops/s=197356.38 p50_us=475.75 p95_us=682.76 p99_us=1046.74 p999_us=26233.62 hit_rate=1.00 memory_used=1280000 evictions=0 admissions_rejected=2809971
+ops/s=14135.12 p50_us=10230.38 p95_us=13036.18 p99_us=15398.08 p999_us=27306.95 hit_rate=0.00 memory_used=41088 evictions=0 admissions_rejected=2849734

@@ -1,0 +1,12 @@
+{
+  "workload": "mixed",
+  "ops_per_sec": 196873,
+  "p50_us": 479.503,
+  "p95_us": 762.88,
+  "p99_us": 1531.03,
+  "p999_us": 24004.1,
+  "hit_rate": 1,
+  "memory_used_bytes": 1280000,
+  "evictions_per_sec": 0,
+  "admissions_rejected_per_sec": 237243
+}

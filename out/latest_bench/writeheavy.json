@@ -1,0 +1,12 @@
+{
+  "workload": "writeheavy",
+  "ops_per_sec": 169986,
+  "p50_us": 512.648,
+  "p95_us": 891.38,
+  "p99_us": 1854.37,
+  "p999_us": 29491.4,
+  "hit_rate": 0.988448,
+  "memory_used_bytes": 1280000,
+  "evictions_per_sec": 0,
+  "admissions_rejected_per_sec": 161384
+}

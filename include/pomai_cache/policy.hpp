@@ -24,7 +24,7 @@ struct PolicyParams {
 
 struct CandidateView {
   std::string key;
-  const Entry* entry;
+  const Entry *entry;
   double miss_cost;
 };
 
@@ -32,16 +32,15 @@ class IEvictionPolicy {
 public:
   virtual ~IEvictionPolicy() = default;
   virtual std::string name() const = 0;
-  virtual bool should_admit(const CandidateView& candidate) = 0;
-  virtual void on_insert(const std::string& key, const Entry& entry) = 0;
-  virtual void on_access(const std::string& key, const Entry& entry) = 0;
-  virtual void on_erase(const std::string& key) = 0;
-  virtual std::optional<std::string> pick_victim(
-      const std::unordered_map<std::string, Entry>& entries,
-      std::size_t memory_used,
-      std::size_t memory_limit) = 0;
-  virtual void set_params(const PolicyParams& params) = 0;
-  virtual const PolicyParams& params() const = 0;
+  virtual bool should_admit(const CandidateView &candidate) = 0;
+  virtual void on_insert(const std::string &key, const Entry &entry) = 0;
+  virtual void on_access(const std::string &key, const Entry &entry) = 0;
+  virtual void on_erase(const std::string &key) = 0;
+  virtual std::optional<std::string>
+  pick_victim(const std::unordered_map<std::string, Entry> &entries,
+              std::size_t memory_used, std::size_t memory_limit) = 0;
+  virtual void set_params(const PolicyParams &params) = 0;
+  virtual const PolicyParams &params() const = 0;
 };
 
 } // namespace pomai_cache

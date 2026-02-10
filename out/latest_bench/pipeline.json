@@ -1,0 +1,12 @@
+{
+  "workload": "pipeline",
+  "ops_per_sec": 197356,
+  "p50_us": 475.75,
+  "p95_us": 682.76,
+  "p99_us": 1046.74,
+  "p999_us": 26233.6,
+  "hit_rate": 1,
+  "memory_used_bytes": 1280000,
+  "evictions_per_sec": 0,
+  "admissions_rejected_per_sec": 351246
+}

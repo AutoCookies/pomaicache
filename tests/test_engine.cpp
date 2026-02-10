@@ -1,50 +1,92 @@
 #include "pomai_cache/engine.hpp"
 
-#include <cassert>
+#include <catch2/catch_test_macros.hpp>
+
 #include <chrono>
 #include <fstream>
 #include <thread>
 
 using namespace pomai_cache;
 
-int main() {
-  {
-    Engine e({1024, 256, 1024, 16}, make_policy_by_name("lru"));
-    e.set("a", std::vector<std::uint8_t>{'1'}, 1, "default");
-    std::this_thread::sleep_for(std::chrono::milliseconds(1100));
-    e.tick();
-    assert(!e.get("a").has_value());
+TEST_CASE("TTL with EX/PX semantics expires and bounded cleanup",
+          "[engine][ttl]") {
+  Engine e({1024 * 1024, 256, 1024, 8}, make_policy_by_name("lru"));
+  REQUIRE(e.set("ex", std::vector<std::uint8_t>{'1'}, 1200, "default"));
+  REQUIRE(e.set("px", std::vector<std::uint8_t>{'1'}, 100, "default"));
+  std::this_thread::sleep_for(std::chrono::milliseconds(150));
+  e.tick();
+  CHECK_FALSE(e.get("px").has_value());
+  CHECK(e.get("ex").has_value());
+
+  for (int i = 0; i < 32; ++i) {
+    REQUIRE(e.set("ttl" + std::to_string(i), std::vector<std::uint8_t>{'1'}, 1,
+                  "default"));
   }
+  std::this_thread::sleep_for(std::chrono::milliseconds(5));
+  const auto before = e.stats().expirations;
+  e.tick();
+  CHECK((e.stats().expirations - before) <= 8);
+}
 
-  {
-    Engine e({64, 256, 1024, 16}, make_policy_by_name("lru"));
-    e.set("a", std::vector<std::uint8_t>(40, 1), std::nullopt, "default");
-    e.set("b", std::vector<std::uint8_t>(40, 2), std::nullopt, "default");
-    assert(e.memory_used() <= 64);
-  }
+TEST_CASE("Pomai policy evicts under pressure and owner quota enforced",
+          "[engine][eviction]") {
+  Engine e({96, 256, 1024, 16}, make_policy_by_name("pomai_cost"));
+  REQUIRE(
+      e.set("a", std::vector<std::uint8_t>(40, 1), std::nullopt, "default"));
+  REQUIRE(
+      e.set("b", std::vector<std::uint8_t>(40, 2), std::nullopt, "default"));
+  REQUIRE(
+      e.set("c", std::vector<std::uint8_t>(40, 3), std::nullopt, "default"));
+  CHECK(e.memory_used() <= 96);
+  CHECK(e.stats().evictions >= 1);
 
-  {
-    Engine e({1024, 256, 1024, 16}, make_policy_by_name("lfu"));
-    e.set("x", std::vector<std::uint8_t>{'x'}, std::nullopt, "default");
-    auto i1 = e.info();
-    auto i2 = e.info();
-    assert(i1 == i2);
-  }
+  const char *path = "policy_params_owner.json";
+  std::ofstream out(path);
+  out << R"({"owner_cap_bytes":16,"version":"quota-v1"})";
+  out.close();
+  REQUIRE(e.reload_params(path));
+  std::string err;
+  CHECK_FALSE(e.set("owner-limited", std::vector<std::uint8_t>(32, 0xFF),
+                    std::nullopt, "default", &err));
+  CHECK(err.find("owner quota") != std::string::npos);
+}
 
-  {
-    const char* path = "tests/policy_params.json";
-    std::ofstream out(path);
-    out << R"({"weights":{"w_mem":-9999},"thresholds":{"evict_pressure":99},"guardrails":{"max_admissions_per_second":0},"version":"v-test"})";
-    out.close();
+TEST_CASE("INFO and top-k are deterministic and sorted",
+          "[engine][determinism]") {
+  Engine e({2048, 256, 1024, 16}, make_policy_by_name("lfu"));
+  REQUIRE(e.set("x", std::vector<std::uint8_t>{'x'}, std::nullopt, "default"));
+  REQUIRE(e.set("y", std::vector<std::uint8_t>{'y'}, std::nullopt, "default"));
+  REQUIRE(e.set("z", std::vector<std::uint8_t>{'z'}, std::nullopt, "default"));
+  e.get("y");
+  e.get("z");
+  e.get("z");
 
-    Engine e({1024, 256, 1024, 16}, make_policy_by_name("pomai_cost"));
-    std::string err;
-    e.reload_params(path, &err);
-    const auto& p = e.policy().params();
-    assert(p.w_mem >= 0.0);
-    assert(p.evict_pressure <= 1.0);
-    assert(p.max_admissions_per_second >= 1);
-  }
+  auto i1 = e.info();
+  auto i2 = e.info();
+  CHECK(i1 == i2);
+  CHECK(i1.find("topk_hits:z:2,y:1,x:0") != std::string::npos);
+}
 
-  return 0;
+TEST_CASE("Param reload clamps and invalid schema rejected atomically",
+          "[engine][config]") {
+  Engine e({1024, 256, 1024, 16}, make_policy_by_name("pomai_cost"));
+  const auto original = e.policy().params();
+
+  const char *good = "policy_params_good.json";
+  std::ofstream out(good);
+  out << R"({"w_mem":-9999,"evict_pressure":99,"max_admissions_per_second":0,"version":"v-test"})";
+  out.close();
+  REQUIRE(e.reload_params(good));
+  const auto &p = e.policy().params();
+  CHECK(p.w_mem >= 0.0);
+  CHECK(p.evict_pressure <= 1.0);
+  CHECK(p.max_admissions_per_second >= 1);
+
+  const char *bad = "policy_params_bad.json";
+  std::ofstream bad_out(bad);
+  bad_out << "not-json";
+  bad_out.close();
+  std::string err;
+  CHECK_FALSE(e.reload_params(bad, &err));
+  CHECK(e.policy().params().version == p.version);
 }

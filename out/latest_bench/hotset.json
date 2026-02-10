@@ -1,0 +1,12 @@
+{
+  "workload": "hotset",
+  "ops_per_sec": 294756,
+  "p50_us": 322.934,
+  "p95_us": 514.428,
+  "p99_us": 733.353,
+  "p999_us": 20556.2,
+  "hit_rate": 0,
+  "memory_used_bytes": 0,
+  "evictions_per_sec": 0,
+  "admissions_rejected_per_sec": 0
+}
