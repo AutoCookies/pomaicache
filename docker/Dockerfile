@@ -2,7 +2,8 @@ FROM debian:bookworm AS build
 RUN apt-get update && apt-get install -y --no-install-recommends build-essential cmake && rm -rf /var/lib/apt/lists/*
 WORKDIR /src
 COPY . .
-RUN cmake -S . -B build -DCMAKE_BUILD_TYPE=Release && cmake --build build -j
+RUN cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF \
+    && cmake --build build -j --target pomai_cache_server
 
 FROM debian:bookworm-slim AS runtime
 RUN useradd -m app
