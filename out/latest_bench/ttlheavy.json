@@ -1,0 +1,12 @@
+{
+  "workload": "ttlheavy",
+  "ops_per_sec": 14135.1,
+  "p50_us": 10230.4,
+  "p95_us": 13036.2,
+  "p99_us": 15398.1,
+  "p999_us": 27306.9,
+  "hit_rate": 0,
+  "memory_used_bytes": 41088,
+  "evictions_per_sec": 0,
+  "admissions_rejected_per_sec": 356217
+}

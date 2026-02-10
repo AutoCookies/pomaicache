@@ -1,0 +1,15 @@
+seed=424242
+|workload|policy|ops/s|hit_rate|evictions|
+|---|---:|---:|---:|---:|
+|hotset|lru|4225767.55|0.98|0|
+|hotset|lfu|4383407.92|0.98|0|
+|hotset|pomai_cost|4263518.41|0.98|0|
+|uniform|lru|4771176.75|0.83|0|
+|uniform|lfu|5452660.82|0.83|0|
+|uniform|pomai_cost|5199652.80|0.83|0|
+|writeheavy|lru|3779650.89|0.93|0|
+|writeheavy|lfu|3772966.99|0.93|0|
+|writeheavy|pomai_cost|4012233.57|0.93|0|
+|mixed|lru|5421671.40|0.83|0|
+|mixed|lfu|5287644.33|0.83|0|
+|mixed|pomai_cost|5154511.64|0.83|0|

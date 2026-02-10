@@ -1,0 +1,12 @@
+{
+  "workload": "uniform",
+  "ops_per_sec": 290947,
+  "p50_us": 332.584,
+  "p95_us": 515.271,
+  "p99_us": 699.708,
+  "p999_us": 22210.2,
+  "hit_rate": 0,
+  "memory_used_bytes": 0,
+  "evictions_per_sec": 0,
+  "admissions_rejected_per_sec": 0
+}
