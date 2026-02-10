@@ -1,0 +1,10 @@
+services:
+  pomai-cache:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    ports:
+      - "6379:6379"
+      - "9108:9108"
+    volumes:
+      - ../config:/app/config
