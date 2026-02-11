@@ -55,3 +55,30 @@ jobs:
           sleep 2
           printf '*1\r\n$4\r\nPING\r\n' | nc 127.0.0.1 6391 | head -n 1 | grep PONG
           docker rm -f pomai-cache-ci
+
+
+  soak-short:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+      - run: cmake --build build -j
+      - run: ./build/pomai_cache_server --port 6390 &
+      - run: sleep 2
+      - run: python3 tests/soak/pomai_cache_soak.py --port 6390 --duration 120
+      - run: pkill pomai_cache_server || true
+
+  replay-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+      - run: cmake --build build -j
+      - run: ./build/pomai_cache_server --port 6392 &
+      - run: sleep 2
+      - run: ./build/pomai_cache_replay --trace traces/mini_hotset.trace --port 6392 --json out/replay_ci.json --csv out/replay_ci.csv
+      - uses: actions/upload-artifact@v4
+        with:
+          name: replay-artifacts
+          path: out/replay_ci.*
+      - run: pkill pomai_cache_server || true

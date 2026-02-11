@@ -1,0 +1,36 @@
+#!/usr/bin/env python3
+import argparse, csv, socket, time, random
+
+p=argparse.ArgumentParser()
+p.add_argument('-n',type=int,default=1000)
+p.add_argument('-c',type=int,default=1)
+p.add_argument('-t',default='get,set')
+p.add_argument('-d',type=int,default=16)
+p.add_argument('-P',type=int,default=1)
+p.add_argument('--csv',action='store_true')
+p.add_argument('--port',type=int,default=6379)
+a=p.parse_args()
+
+ops=a.t.split(',')
+s=socket.create_connection(('127.0.0.1',a.port))
+
+def send(parts):
+    wire=f"*{len(parts)}\r\n".encode()
+    for part in parts:
+        b=str(part).encode(); wire+=f"${len(b)}\r\n".encode()+b+b"\r\n"
+    s.sendall(wire); s.recv(4096)
+
+lat=[]
+start=time.time()
+for i in range(a.n):
+    op=ops[i%len(ops)].upper(); k=f"k{random.randint(0,999)}"
+    st=time.perf_counter_ns()
+    if op=='SET': send(['SET',k,'x'*a.d])
+    else: send(['GET',k])
+    lat.append((time.perf_counter_ns()-st)/1000)
+secs=time.time()-start
+row={'ops/s':a.n/max(secs,1e-9),'p50':sorted(lat)[int(0.5*len(lat))],'p95':sorted(lat)[int(0.95*len(lat))]}
+if a.csv:
+    w=csv.DictWriter(open('/dev/stdout','w'),fieldnames=row.keys()); w.writeheader(); w.writerow(row)
+else:
+    print(row)

@@ -3,11 +3,15 @@
 
 #include <algorithm>
 #include <arpa/inet.h>
+#include <chrono>
 #include <csignal>
 #include <cstring>
+#include <deque>
+#include <fstream>
 #include <iostream>
 #include <netinet/in.h>
 #include <optional>
+#include <random>
 #include <sstream>
 #include <sys/select.h>
 #include <sys/socket.h>
@@ -34,16 +38,40 @@ bool parse_u64(const std::string &s, std::uint64_t &out) {
   }
 }
 
+std::string latency_bucket(std::uint64_t us) {
+  if (us < 100)
+    return "lt100us";
+  if (us < 500)
+    return "lt500us";
+  if (us < 1000)
+    return "lt1ms";
+  if (us < 5000)
+    return "lt5ms";
+  return "ge5ms";
+}
+
 struct ClientState {
   pomai_cache::RespParser parser;
   std::string out;
-  std::size_t bytes_pending{0};
 };
 
 struct ServerStats {
   std::uint64_t rejected_requests{0};
   std::uint64_t total_request_bytes{0};
   std::uint64_t request_count{0};
+};
+
+struct TraceConfig {
+  bool enabled{false};
+  std::string path{"trace/pomai_cache.trace.jsonl"};
+  double sample_rate{0.0};
+  std::uint64_t dropped{0};
+};
+
+struct SlowEntry {
+  std::string cmd;
+  std::uint64_t latency_us{0};
+  std::uint64_t timestamp_ms{0};
 };
 
 } // namespace
@@ -70,10 +98,19 @@ int main(int argc, char **argv) {
   }
 
   auto policy = pomai_cache::make_policy_by_name(policy_mode);
-  pomai_cache::Engine engine({memory_limit, 256, 1024 * 1024, 128},
-                             std::move(policy));
+  pomai_cache::Engine engine({memory_limit, 256, 1024 * 1024, 128}, std::move(policy));
   std::string reload_err;
   engine.reload_params(params_path, &reload_err);
+
+  TraceConfig trace_cfg;
+  std::ofstream trace_stream;
+  std::uint64_t rng_seed = 424242;
+  std::mt19937_64 rng(rng_seed);
+  std::uniform_real_distribution<double> sample_dist(0.0, 1.0);
+  std::deque<std::string> trace_ring;
+  std::deque<SlowEntry> slowlog;
+  constexpr std::size_t max_slowlog = 256;
+  constexpr std::size_t max_trace_ring = 512;
 
   int server_fd = socket(AF_INET, SOCK_STREAM, 0);
   int one = 1;
@@ -107,8 +144,7 @@ int main(int argc, char **argv) {
       FD_SET(fd, &readfds);
       if (!st.out.empty())
         FD_SET(fd, &writefds);
-      if (fd > maxfd)
-        maxfd = fd;
+      maxfd = std::max(maxfd, fd);
     }
     timeval tv{0, 20000};
     int n = select(maxfd + 1, &readfds, &writefds, nullptr, &tv);
@@ -147,6 +183,11 @@ int main(int argc, char **argv) {
             break;
           ++processed;
           ++stats.request_count;
+          const auto op_start = pomai_cache::Clock::now();
+          std::string first_key;
+          std::string op_name = cmd->empty() ? "UNKNOWN" : upper((*cmd)[0]);
+          bool hit = false;
+
           if (cmd->size() == 1 && cmd->front() == "__MALFORMED__") {
             ++stats.rejected_requests;
             st.out += pomai_cache::resp_error("malformed RESP");
@@ -158,15 +199,14 @@ int main(int argc, char **argv) {
             continue;
           }
 
-          const auto c = upper((*cmd)[0]);
-          if (c == "PING")
+          if (op_name == "PING")
             st.out += pomai_cache::resp_simple("PONG");
-          else if (c == "SET") {
+          else if (op_name == "SET") {
             if (cmd->size() < 3) {
               ++stats.rejected_requests;
-              st.out += pomai_cache::resp_error(
-                  "SET key value [EX sec|PX ms] [OWNER name]");
+              st.out += pomai_cache::resp_error("SET key value [EX sec|PX ms] [OWNER name]");
             } else {
+              first_key = (*cmd)[1];
               std::optional<std::uint64_t> ttl_ms;
               std::string owner = "default";
               bool valid = true;
@@ -179,8 +219,9 @@ int main(int argc, char **argv) {
                 } else if (opt == "PX") {
                   valid = parse_u64((*cmd)[i + 1], ttl_tmp);
                   ttl_ms = ttl_tmp;
-                } else if (opt == "OWNER")
+                } else if (opt == "OWNER") {
                   owner = (*cmd)[i + 1];
+                }
                 if (!valid)
                   break;
               }
@@ -188,92 +229,126 @@ int main(int argc, char **argv) {
                 ++stats.rejected_requests;
                 st.out += pomai_cache::resp_error("invalid numeric argument");
               } else {
-                std::vector<std::uint8_t> val((*cmd)[2].begin(),
-                                              (*cmd)[2].end());
+                std::vector<std::uint8_t> val((*cmd)[2].begin(), (*cmd)[2].end());
                 std::string err;
-                if (engine.set((*cmd)[1], val, ttl_ms, owner, &err))
+                if (engine.set((*cmd)[1], val, ttl_ms, owner, &err)) {
                   st.out += pomai_cache::resp_simple("OK");
-                else {
+                  hit = true;
+                } else {
                   ++stats.rejected_requests;
                   st.out += pomai_cache::resp_error(err);
                 }
               }
             }
-          } else if (c == "GET") {
+          } else if (op_name == "GET") {
             if (cmd->size() != 2) {
               ++stats.rejected_requests;
               st.out += pomai_cache::resp_error("GET key");
             } else {
+              first_key = (*cmd)[1];
               auto v = engine.get((*cmd)[1]);
+              hit = v.has_value();
               if (!v)
                 st.out += pomai_cache::resp_null();
               else
-                st.out +=
-                    pomai_cache::resp_bulk(std::string(v->begin(), v->end()));
+                st.out += pomai_cache::resp_bulk(std::string(v->begin(), v->end()));
             }
-          } else if (c == "MGET") {
+          } else if (op_name == "MGET") {
             if (cmd->size() < 2) {
               ++stats.rejected_requests;
               st.out += pomai_cache::resp_error("MGET key [key...]");
             } else {
+              first_key = (*cmd)[1];
               std::vector<std::string> keys(cmd->begin() + 1, cmd->end());
               auto vals = engine.mget(keys);
               std::vector<std::string> arr;
               arr.reserve(vals.size());
-              for (auto &v : vals)
-                arr.push_back(v ? pomai_cache::resp_bulk(
-                                      std::string(v->begin(), v->end()))
-                                : pomai_cache::resp_null());
+              for (auto &v : vals) {
+                if (v)
+                  hit = true;
+                arr.push_back(v ? pomai_cache::resp_bulk(std::string(v->begin(), v->end())) : pomai_cache::resp_null());
+              }
               st.out += pomai_cache::resp_array(arr);
             }
-          } else if (c == "DEL") {
+          } else if (op_name == "DEL") {
             if (cmd->size() < 2) {
               ++stats.rejected_requests;
               st.out += pomai_cache::resp_error("DEL key [key...]");
             } else {
+              first_key = (*cmd)[1];
               std::vector<std::string> keys(cmd->begin() + 1, cmd->end());
               st.out += pomai_cache::resp_integer(engine.del(keys));
             }
-          } else if (c == "EXPIRE") {
+          } else if (op_name == "EXPIRE") {
             if (cmd->size() != 3) {
               ++stats.rejected_requests;
               st.out += pomai_cache::resp_error("EXPIRE key seconds");
             } else {
+              first_key = (*cmd)[1];
               std::uint64_t ttl_s = 0;
               if (!parse_u64((*cmd)[2], ttl_s)) {
                 ++stats.rejected_requests;
                 st.out += pomai_cache::resp_error("invalid numeric argument");
               } else {
-                st.out += pomai_cache::resp_integer(
-                    engine.expire((*cmd)[1], ttl_s) ? 1 : 0);
+                hit = engine.expire((*cmd)[1], ttl_s);
+                st.out += pomai_cache::resp_integer(hit ? 1 : 0);
               }
             }
-          } else if (c == "TTL") {
+          } else if (op_name == "TTL") {
             if (cmd->size() != 2) {
               ++stats.rejected_requests;
               st.out += pomai_cache::resp_error("TTL key");
             } else {
+              first_key = (*cmd)[1];
               auto t = engine.ttl((*cmd)[1]);
+              hit = t.has_value();
               st.out += pomai_cache::resp_integer(t ? *t : -2);
             }
-          } else if (c == "INFO") {
+          } else if (op_name == "INFO") {
             std::ostringstream info;
             info << engine.info();
             info << "connected_clients:" << clients.size() << "\n";
             info << "rejected_requests:" << stats.rejected_requests << "\n";
-            const double avg_bytes =
-                stats.request_count == 0
-                    ? 0.0
-                    : static_cast<double>(stats.total_request_bytes) /
-                          static_cast<double>(stats.request_count);
+            const double avg_bytes = stats.request_count == 0 ? 0.0 : static_cast<double>(stats.total_request_bytes) / static_cast<double>(stats.request_count);
             info << "avg_request_bytes:" << avg_bytes << "\n";
+            info << "trace_enabled:" << (trace_cfg.enabled ? 1 : 0) << "\n";
+            info << "trace_sample_rate:" << trace_cfg.sample_rate << "\n";
+            info << "trace_dropped:" << trace_cfg.dropped << "\n";
             st.out += pomai_cache::resp_bulk(info.str());
-          } else if (c == "CONFIG") {
+          } else if (op_name == "SLOWLOG") {
+            if (cmd->size() >= 2 && upper((*cmd)[1]) == "RESET") {
+              slowlog.clear();
+              st.out += pomai_cache::resp_simple("OK");
+            } else if (cmd->size() >= 2 && upper((*cmd)[1]) == "GET") {
+              std::uint64_t nentries = 16;
+              if (cmd->size() == 3)
+                parse_u64((*cmd)[2], nentries);
+              nentries = std::min<std::uint64_t>(nentries, max_slowlog);
+              std::vector<std::string> arr;
+              for (std::size_t i = 0; i < std::min<std::size_t>(nentries, slowlog.size()); ++i) {
+                const auto &e = slowlog[slowlog.size() - 1 - i];
+                std::vector<std::string> item{pomai_cache::resp_integer(static_cast<std::int64_t>(e.timestamp_ms)), pomai_cache::resp_integer(static_cast<std::int64_t>(e.latency_us)), pomai_cache::resp_bulk(e.cmd)};
+                arr.push_back(pomai_cache::resp_array(item));
+              }
+              st.out += pomai_cache::resp_array(arr);
+            } else {
+              st.out += pomai_cache::resp_error("SLOWLOG GET [N]|RESET");
+            }
+          } else if (op_name == "TRACE" && cmd->size() == 2 && upper((*cmd)[1]) == "STREAM") {
+            std::vector<std::string> arr;
+            for (const auto &line : trace_ring)
+              arr.push_back(pomai_cache::resp_bulk(line));
+            st.out += pomai_cache::resp_array(arr);
+          } else if (op_name == "DEBUG" && cmd->size() == 3 && upper((*cmd)[1]) == "DUMPSTATS") {
+            std::string err;
+            if (engine.dump_stats((*cmd)[2], &err))
+              st.out += pomai_cache::resp_simple("OK");
+            else
+              st.out += pomai_cache::resp_error(err);
+          } else if (op_name == "CONFIG") {
             if (cmd->size() >= 2 && upper((*cmd)[1]) == "GET") {
               if (cmd->size() == 3 && upper((*cmd)[2]) == "POLICY") {
-                std::vector<std::string> arr{
-                    pomai_cache::resp_bulk("policy"),
-                    pomai_cache::resp_bulk(engine.policy().name())};
+                std::vector<std::string> arr{pomai_cache::resp_bulk("policy"), pomai_cache::resp_bulk(engine.policy().name())};
                 st.out += pomai_cache::resp_array(arr);
               } else {
                 ++stats.rejected_requests;
@@ -291,6 +366,34 @@ int main(int argc, char **argv) {
                 } else {
                   st.out += pomai_cache::resp_simple("OK");
                 }
+              } else if (cmd->size() == 4 && upper((*cmd)[2]) == "POLICY.CANARY_PCT") {
+                std::uint64_t pct = 0;
+                if (!parse_u64((*cmd)[3], pct)) {
+                  st.out += pomai_cache::resp_error("invalid numeric argument");
+                } else {
+                  engine.set_canary_pct(pct);
+                  st.out += pomai_cache::resp_simple("OK");
+                }
+              } else if (cmd->size() == 4 && upper((*cmd)[2]) == "TRACE.ENABLED") {
+                trace_cfg.enabled = upper((*cmd)[3]) == "YES" || (*cmd)[3] == "1";
+                if (trace_cfg.enabled && !trace_stream.is_open()) {
+                  trace_stream.open(trace_cfg.path, std::ios::app);
+                }
+                st.out += pomai_cache::resp_simple("OK");
+              } else if (cmd->size() == 4 && upper((*cmd)[2]) == "TRACE.PATH") {
+                trace_cfg.path = (*cmd)[3];
+                if (trace_stream.is_open())
+                  trace_stream.close();
+                if (trace_cfg.enabled)
+                  trace_stream.open(trace_cfg.path, std::ios::app);
+                st.out += pomai_cache::resp_simple("OK");
+              } else if (cmd->size() == 4 && upper((*cmd)[2]) == "TRACE.SAMPLE_RATE") {
+                try {
+                  trace_cfg.sample_rate = std::clamp(std::stod((*cmd)[3]), 0.0, 1.0);
+                  st.out += pomai_cache::resp_simple("OK");
+                } catch (...) {
+                  st.out += pomai_cache::resp_error("invalid sample rate");
+                }
               } else {
                 ++stats.rejected_requests;
                 st.out += pomai_cache::resp_error("unsupported CONFIG SET");
@@ -303,6 +406,37 @@ int main(int argc, char **argv) {
             ++stats.rejected_requests;
             st.out += pomai_cache::resp_error("unknown command");
           }
+
+          const auto latency_us = static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(pomai_cache::Clock::now() - op_start).count());
+          if (latency_us > 5000) {
+            slowlog.push_back({op_name, latency_us, static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(pomai_cache::Clock::now().time_since_epoch()).count())});
+            if (slowlog.size() > max_slowlog)
+              slowlog.pop_front();
+          }
+
+          if (trace_cfg.enabled && sample_dist(rng) <= trace_cfg.sample_rate) {
+            if (!trace_stream.is_open())
+              trace_stream.open(trace_cfg.path, std::ios::app);
+            if (trace_stream.is_open()) {
+              const auto now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(pomai_cache::Clock::now().time_since_epoch()).count();
+              const std::string owner = cmd->size() > 1 ? "default" : "n/a";
+              const std::size_t key_hash = first_key.empty() ? 0 : std::hash<std::string>{}(first_key);
+              std::ostringstream line;
+              line << "{\"ts_ms\":" << now_ms << ",\"op\":\"" << op_name << "\",\"key_hash\":" << key_hash << ",\"value_size\":";
+              if (op_name == "SET" && cmd->size() >= 3)
+                line << (*cmd)[2].size();
+              else
+                line << 0;
+              line << ",\"ttl_class\":\"" << (op_name == "SET" && cmd->size() > 3 ? "with_ttl" : "none") << "\",\"owner\":\"" << owner << "\",\"result\":\"" << (hit ? "hit" : "miss") << "\",\"lat_bucket\":\"" << latency_bucket(latency_us) << "\",\"policy_version\":\"" << engine.policy().params().version << "\",\"rng_seed\":" << rng_seed << "}";
+              trace_stream << line.str() << "\n";
+              trace_ring.push_back(line.str());
+              if (trace_ring.size() > max_trace_ring)
+                trace_ring.pop_front();
+            } else {
+              ++trace_cfg.dropped;
+            }
+          }
+
           if (st.out.size() > max_pending_out) {
             ++stats.rejected_requests;
             to_close.push_back(fd);
@@ -310,9 +444,9 @@ int main(int argc, char **argv) {
           }
         }
       }
+
       if (FD_ISSET(fd, &writefds) && !st.out.empty()) {
-        const std::size_t send_bytes =
-            std::min<std::size_t>(st.out.size(), 8192);
+        const std::size_t send_bytes = std::min<std::size_t>(st.out.size(), 8192);
         ssize_t w = send(fd, st.out.data(), send_bytes, 0);
         if (w <= 0)
           to_close.push_back(fd);
@@ -320,9 +454,9 @@ int main(int argc, char **argv) {
           st.out.erase(0, static_cast<std::size_t>(w));
       }
     }
+
     std::sort(to_close.begin(), to_close.end());
-    to_close.erase(std::unique(to_close.begin(), to_close.end()),
-                   to_close.end());
+    to_close.erase(std::unique(to_close.begin(), to_close.end()), to_close.end());
     for (int fd : to_close) {
       close(fd);
       clients.erase(fd);
@@ -332,5 +466,7 @@ int main(int argc, char **argv) {
   for (auto &[fd, _] : clients)
     close(fd);
   close(server_fd);
+  if (trace_stream.is_open())
+    trace_stream.close();
   return 0;
 }

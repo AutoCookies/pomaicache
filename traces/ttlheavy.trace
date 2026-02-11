@@ -1,0 +1,6 @@
+{"ts_ms":0,"op":"SET","key_hash":100,"value_size":16}
+{"ts_ms":1,"op":"SET","key_hash":101,"value_size":16}
+{"ts_ms":2,"op":"SET","key_hash":102,"value_size":16}
+{"ts_ms":5,"op":"GET","key_hash":100,"value_size":0}
+{"ts_ms":10,"op":"GET","key_hash":101,"value_size":0}
+{"ts_ms":15,"op":"GET","key_hash":103,"value_size":0}

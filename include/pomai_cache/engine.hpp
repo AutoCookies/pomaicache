@@ -4,6 +4,7 @@
 
 #include <cstdint>
 #include <functional>
+#include <deque>
 #include <memory>
 #include <optional>
 #include <queue>
@@ -46,6 +47,10 @@ public:
 
   std::string info() const;
   bool reload_params(const std::string &path, std::string *err = nullptr);
+  void set_canary_pct(std::uint64_t pct);
+  std::uint64_t canary_pct() const { return canary_pct_; }
+  bool rollback_to_lkg(std::string *err = nullptr);
+  bool dump_stats(const std::string &path, std::string *err = nullptr) const;
 
   const EngineStats &stats() const { return stats_; }
   std::size_t memory_used() const { return memory_used_; }
@@ -70,6 +75,15 @@ private:
   void evict_until_fit();
   double owner_miss_cost(const std::string &owner) const;
   std::size_t bucket_for(std::size_t size) const;
+  bool is_canary_key(const std::string &key) const;
+  void maybe_evaluate_canary();
+  static std::uint64_t p99_from_samples(const std::deque<std::uint64_t> &samples);
+
+  struct CohortStats {
+    std::uint64_t gets{0};
+    std::uint64_t hits{0};
+    std::deque<std::uint64_t> latency_us;
+  };
 
   EngineConfig cfg_;
   std::unique_ptr<IEvictionPolicy> policy_;
@@ -84,6 +98,18 @@ private:
   std::size_t memory_used_{0};
   std::size_t bucket_used_{0};
   std::size_t expiration_backlog_{0};
+  std::uint64_t canary_pct_{0};
+  bool canary_active_{false};
+  PolicyParams control_params_{};
+  PolicyParams canary_params_{};
+  std::string lkg_path_{".pomai_lkg_params.json"};
+  CohortStats control_stats_;
+  CohortStats canary_stats_;
+  TimePoint canary_start_{Clock::now()};
+  TimePoint last_guardrail_eval_{Clock::now()};
+  std::uint64_t baseline_evictions_{0};
+  std::uint64_t rollback_events_{0};
+  std::string last_canary_event_{"none"};
 };
 
 std::unique_ptr<IEvictionPolicy> make_policy_by_name(const std::string &mode);
