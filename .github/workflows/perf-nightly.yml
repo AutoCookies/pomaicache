@@ -1,0 +1,22 @@
+name: perf-nightly
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 3 * * *"
+
+jobs:
+  replay-perf:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+      - run: cmake --build build -j
+      - run: ./build/pomai_cache_server --port 6393 &
+      - run: sleep 2
+      - run: ./build/pomai_cache_replay --trace traces/mini_hotset.trace --port 6393 --json out/perf_mini.json --csv out/perf_mini.csv
+      - run: ./build/pomai_cache_replay --trace traces/ttlheavy.trace --port 6393 --json out/perf_ttl.json --csv out/perf_ttl.csv
+      - uses: actions/upload-artifact@v4
+        with:
+          name: perf-nightly
+          path: out/perf_*
+      - run: pkill pomai_cache_server || true

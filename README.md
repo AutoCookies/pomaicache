@@ -109,3 +109,26 @@ Bench reports per workload and policy:
 - max concurrent connections enforced
 - slow-client protection via bounded output buffer
 - bounded per-tick TTL cleanup
+
+
+## Trace replay example
+
+```bash
+./build/pomai_cache_replay --trace traces/mini_hotset.trace --port 6379 --scale 2.0 --json out/replay_summary.json --csv out/replay_timeseries.csv
+```
+
+## Canary rollout example
+
+```bash
+redis-cli -p 6379 CONFIG SET POLICY.CANARY_PCT 10
+redis-cli -p 6379 CONFIG SET PARAMS config/policy_params.json
+redis-cli -p 6379 INFO
+```
+
+## Slowlog and diagnostics
+
+```bash
+redis-cli -p 6379 SLOWLOG GET 10
+redis-cli -p 6379 DEBUG DUMPSTATS /tmp/pomai_dump.txt
+redis-cli -p 6379 TRACE STREAM
+```

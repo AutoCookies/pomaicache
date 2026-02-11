@@ -23,6 +23,9 @@ if(NOT WIN32)
 
   add_executable(pomai_cache_netbench bench/pomai_cache_netbench.cpp)
   target_link_libraries(pomai_cache_netbench PRIVATE pomai_cache_core)
+
+  add_executable(pomai_cache_replay bench/pomai_cache_replay.cpp)
+  target_link_libraries(pomai_cache_replay PRIVATE pomai_cache_core)
 endif()
 
 add_executable(pomai_cache_bench bench/pomai_cache_bench.cpp)
@@ -40,6 +43,14 @@ if(BUILD_TESTING)
 
   add_test(NAME test_engine COMMAND test_engine)
   add_test(NAME test_resp COMMAND test_resp)
+
+  add_executable(test_chaos tests/test_chaos.cpp)
+  target_link_libraries(test_chaos PRIVATE pomai_cache_core mini_catch_main)
+  add_test(NAME test_chaos COMMAND test_chaos)
+
+  add_executable(test_canary tests/test_canary.cpp)
+  target_link_libraries(test_canary PRIVATE pomai_cache_core mini_catch_main)
+  add_test(NAME test_canary COMMAND test_canary)
 
   if(NOT WIN32)
     add_executable(test_integration tests/test_integration.cpp)
