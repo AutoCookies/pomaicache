@@ -12,6 +12,7 @@ add_library(pomai_cache_core
   src/engine/ssd_store.cpp
   src/policy/policies.cpp
   src/server/resp.cpp
+  src/server/ai_cache.cpp
   src/metrics/info_metrics.cpp
   src/util/time.cpp
 )
@@ -29,6 +30,9 @@ endif()
 add_executable(pomai_cache_bench bench/pomai_cache_bench.cpp)
 target_link_libraries(pomai_cache_bench PRIVATE pomai_cache_core)
 
+add_executable(pomai_cache_ai_bench bench/ai_artifact_bench.cpp)
+target_link_libraries(pomai_cache_ai_bench PRIVATE pomai_cache_core)
+
 include(CTest)
 if(BUILD_TESTING)
   add_library(mini_catch_main third_party/catch2/catch_main.cpp)
@@ -39,8 +43,12 @@ if(BUILD_TESTING)
   add_executable(test_resp tests/test_resp.cpp)
   target_link_libraries(test_resp PRIVATE pomai_cache_core mini_catch_main)
 
+  add_executable(test_ai_cache tests/test_ai_cache.cpp)
+  target_link_libraries(test_ai_cache PRIVATE pomai_cache_core mini_catch_main)
+
   add_test(NAME test_engine COMMAND test_engine)
   add_test(NAME test_resp COMMAND test_resp)
+  add_test(NAME test_ai_cache COMMAND test_ai_cache)
 
   if(NOT WIN32)
     add_executable(test_integration tests/test_integration.cpp)

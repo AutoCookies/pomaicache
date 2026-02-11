@@ -171,3 +171,38 @@ TEST_CASE("integration: adversarial caps and churn",
   close(fd);
   stop_server(s);
 }
+
+TEST_CASE("integration: AI artifact commands", "[integration][ai]") {
+  auto s = spawn_server();
+  int fd = connect_port(s.port);
+  REQUIRE(fd >= 0);
+
+  auto send_cmd = [&](const std::vector<std::string> &args) {
+    auto req = cmd(args);
+    send(fd, req.data(), req.size(), 0);
+    return read_reply(fd);
+  };
+
+  auto put = send_cmd({"AI.PUT", "embedding", "emb:m:h:3:float", "{\"artifact_type\":\"embedding\",\"owner\":\"vector\",\"schema_version\":\"v1\",\"model_id\":\"m\",\"snapshot_epoch\":\"ep9\"}", "abc"});
+  REQUIRE(put.has_value());
+  REQUIRE(put->rfind("+OK", 0) == 0);
+
+  auto get = send_cmd({"AI.GET", "emb:m:h:3:float"});
+  REQUIRE(get.has_value());
+  CHECK(get->rfind("*2", 0) == 0);
+
+  auto stats = send_cmd({"AI.STATS"});
+  REQUIRE(stats.has_value());
+  CHECK(stats->find("dedup_hits") != std::string::npos);
+
+  auto inv = send_cmd({"AI.INVALIDATE", "EPOCH", "ep9"});
+  REQUIRE(inv.has_value());
+  CHECK(inv->rfind(":1", 0) == 0);
+
+  auto miss = send_cmd({"AI.GET", "emb:m:h:3:float"});
+  REQUIRE(miss.has_value());
+  CHECK(miss->rfind("$-1", 0) == 0);
+
+  close(fd);
+  stop_server(s);
+}

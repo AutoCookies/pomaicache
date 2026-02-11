@@ -44,6 +44,11 @@ Engine::Engine(EngineConfig cfg, std::unique_ptr<IEvictionPolicy> policy)
             cfg_.tier.ssd_max_write_mb_s, 512, 0.25, cfg_.fsync_mode}) {
   owner_miss_cost_default_["default"] = 1.0;
   owner_miss_cost_default_["premium"] = 2.0;
+  owner_miss_cost_default_["vector"] = 8.0;
+  owner_miss_cost_default_["prompt"] = 2.0;
+  owner_miss_cost_default_["rag"] = 3.0;
+  owner_miss_cost_default_["rerank"] = 4.0;
+  owner_miss_cost_default_["response"] = 5.0;
   if (cfg_.tier.ssd_enabled)
     cfg_.memory_limit_bytes = cfg_.tier.ram_max_bytes;
   ssd_.init();

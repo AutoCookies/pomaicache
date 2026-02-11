@@ -1,6 +1,6 @@
 # Pomai Cache v1
 
-Redis-compatible (subset) local cache core with RAM+SSD tiering, bounded TTL cleanup, crash-safe append-only SSD segments, and selectable eviction policy (`lru`, `lfu`, `pomai_cost`).
+Redis-compatible (subset) local cache core with RAM+SSD tiering, bounded TTL cleanup, crash-safe append-only SSD segments, selectable eviction policy (`lru`, `lfu`, `pomai_cost`), and an AI artifact cache layer for embeddings/prompts/RAG/rerank/response reuse.
 
 ## Repo structure
 
@@ -46,6 +46,16 @@ redis-cli -p 6379 INFO
 redis-cli -p 6379 CONFIG GET POLICY
 redis-cli -p 6379 CONFIG SET POLICY lru
 redis-cli -p 6379 CONFIG SET PARAMS /app/config/policy_params.json
+```
+
+
+### AI artifact quickstart (redis-cli)
+
+```bash
+redis-cli -p 6379 AI.PUT embedding emb:modelA:hashA:768:float16 '{"artifact_type":"embedding","owner":"vector","schema_version":"v1","model_id":"modelA","snapshot_epoch":"ix1"}' "abc"
+redis-cli -p 6379 AI.GET emb:modelA:hashA:768:float16
+redis-cli -p 6379 AI.STATS
+redis-cli -p 6379 AI.INVALIDATE EPOCH ix1
 ```
 
 ## Make targets
@@ -119,7 +129,7 @@ Recommended defaults:
 - `--ssd-enabled --data-dir ./data`
 - `--ssd-value-min-bytes 2048`
 - `--ssd-read-mb-s 256 --ssd-write-mb-s 256`
-- `--fsync everysec`
+- `--fsync never`
 
 Data files are stored under `--data-dir`:
 
@@ -127,3 +137,13 @@ Data files are stored under `--data-dir`:
 - `segment_<id>.log`
 
 See: `docs/TIERING.md`, `docs/SSD_FORMAT.md`, `docs/CRASH_SEMANTICS.md`, and `docs/BENCH_TIERING.md`.
+
+
+## AI workload recommended config
+
+- use SSD tier for large embeddings: `--ssd-enabled --ssd-value-min-bytes 2048`
+- keep fsync disabled for cache semantics: `--fsync never`
+- prefer `pomai_cost` policy for mixed AI artifact owners
+- use short TTL for rerank/response and longer TTL for embeddings
+
+See: `docs/AI_CACHE.md`, `docs/AI_COMMANDS.md`, `docs/INVALIDATION.md`, `docs/BLOB_DEDUP.md`.
