@@ -1,8 +1,10 @@
 #pragma once
 
 #include "pomai_cache/policy.hpp"
+#include "pomai_cache/ssd_store.hpp"
 
 #include <cstdint>
+#include <deque>
 #include <functional>
 #include <memory>
 #include <optional>
@@ -13,11 +15,26 @@
 
 namespace pomai_cache {
 
+struct TierConfig {
+  bool ssd_enabled{false};
+  std::size_t ssd_value_min_bytes{32 * 1024};
+  std::size_t ssd_max_bytes{2ULL * 1024 * 1024 * 1024};
+  std::size_t ram_max_bytes{64 * 1024 * 1024};
+  std::uint64_t promotion_hits{3};
+  double demotion_pressure{0.90};
+  std::size_t ssd_max_read_mb_s{256};
+  std::size_t ssd_max_write_mb_s{256};
+};
+
 struct EngineConfig {
   std::size_t memory_limit_bytes{64 * 1024 * 1024};
   std::size_t max_key_len{256};
   std::size_t max_value_size{1024 * 1024};
   std::size_t ttl_cleanup_per_tick{128};
+  std::size_t tier_work_per_tick{64};
+  std::string data_dir{"./data"};
+  TierConfig tier{};
+  FsyncMode fsync_mode{FsyncMode::EverySec};
 };
 
 struct EngineStats {
@@ -70,6 +87,7 @@ private:
   void evict_until_fit();
   double owner_miss_cost(const std::string &owner) const;
   std::size_t bucket_for(std::size_t size) const;
+  void maybe_enqueue_demotion();
 
   EngineConfig cfg_;
   std::unique_ptr<IEvictionPolicy> policy_;
@@ -78,12 +96,18 @@ private:
   std::priority_queue<ExpiryNode, std::vector<ExpiryNode>,
                       std::greater<ExpiryNode>>
       expiry_heap_;
+  std::unordered_map<std::string, std::uint64_t> ssd_hit_count_;
+  std::deque<std::string> promote_queue_;
+  std::deque<std::string> demote_queue_;
   std::unordered_map<std::string, double> owner_miss_cost_default_;
   std::unordered_map<std::string, std::size_t> owner_usage_;
   EngineStats stats_;
   std::size_t memory_used_{0};
   std::size_t bucket_used_{0};
   std::size_t expiration_backlog_{0};
+  std::uint64_t seq_{0};
+
+  SsdStore ssd_;
 };
 
 std::unique_ptr<IEvictionPolicy> make_policy_by_name(const std::string &mode);

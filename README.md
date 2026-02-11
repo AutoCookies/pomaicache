@@ -1,6 +1,6 @@
 # Pomai Cache v1
 
-Redis-compatible (subset) in-memory cache with deterministic INFO output, bounded TTL cleanup, and selectable eviction policy (`lru`, `lfu`, `pomai_cost`).
+Redis-compatible (subset) local cache core with RAM+SSD tiering, bounded TTL cleanup, crash-safe append-only SSD segments, and selectable eviction policy (`lru`, `lfu`, `pomai_cost`).
 
 ## Repo structure
 
@@ -21,7 +21,7 @@ Redis-compatible (subset) in-memory cache with deterministic INFO output, bounde
 ```bash
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug
 cmake --build build -j
-./build/pomai_cache_server --port 6379 --policy pomai_cost --params config/policy_params.json
+./build/pomai_cache_server --port 6379 --policy pomai_cost --params config/policy_params.json --ssd-enabled --data-dir ./data --ssd-value-min-bytes 2048 --fsync everysec
 ```
 
 or:
@@ -54,6 +54,7 @@ redis-cli -p 6379 CONFIG SET PARAMS /app/config/policy_params.json
 - `make release` release build
 - `make test` tests
 - `make bench` benchmarks
+- `make crash-suite` short crash/recovery harness
 - `make fmt` clang-format
 - `make docker-build`
 - `make docker-run`
@@ -109,3 +110,20 @@ Bench reports per workload and policy:
 - max concurrent connections enforced
 - slow-client protection via bounded output buffer
 - bounded per-tick TTL cleanup
+
+## SSD tier defaults (laptop-safe)
+
+Recommended defaults:
+
+- `--memory 67108864` (64 MiB RAM tier)
+- `--ssd-enabled --data-dir ./data`
+- `--ssd-value-min-bytes 2048`
+- `--ssd-read-mb-s 256 --ssd-write-mb-s 256`
+- `--fsync everysec`
+
+Data files are stored under `--data-dir`:
+
+- `manifest.txt`
+- `segment_<id>.log`
+
+See: `docs/TIERING.md`, `docs/SSD_FORMAT.md`, `docs/CRASH_SEMANTICS.md`, and `docs/BENCH_TIERING.md`.

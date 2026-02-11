@@ -9,6 +9,7 @@ include_directories(include third_party)
 
 add_library(pomai_cache_core
   src/engine/engine.cpp
+  src/engine/ssd_store.cpp
   src/policy/policies.cpp
   src/server/resp.cpp
   src/metrics/info_metrics.cpp
@@ -46,4 +47,9 @@ if(BUILD_TESTING)
     target_link_libraries(test_integration PRIVATE pomai_cache_core mini_catch_main)
     add_test(NAME test_integration COMMAND test_integration)
   endif()
+endif()
+
+if(NOT WIN32)
+  add_executable(pomai_cache_crash_harness tests/crash_harness.cpp)
+  target_link_libraries(pomai_cache_crash_harness PRIVATE pomai_cache_core)
 endif()

@@ -1,6 +1,6 @@
 BUILD_DIR ?= build
 
-.PHONY: dev release test bench netbench bench-all fmt fmt-check asan docker-build docker-run docker-smoke
+.PHONY: dev release test bench netbench bench-all crash-suite fmt fmt-check asan docker-build docker-run docker-smoke
 
 dev:
 	cmake -S . -B $(BUILD_DIR) -DCMAKE_BUILD_TYPE=Debug
@@ -51,3 +51,8 @@ docker-smoke: docker-build
 	sleep 2
 	printf '*1\r\n$4\r\nPING\r\n' | nc 127.0.0.1 6390 | head -n 1
 	docker rm -f pomai-cache-smoke
+
+crash-suite:
+	cmake -S . -B $(BUILD_DIR)-debug -DCMAKE_BUILD_TYPE=Debug
+	cmake --build $(BUILD_DIR)-debug -j
+	cd $(BUILD_DIR)-debug && ./pomai_cache_crash_harness everysec

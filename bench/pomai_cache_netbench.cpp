@@ -100,7 +100,11 @@ std::string fixed_key(int k, int key_size) {
 }
 
 void parse_info(const std::string &info, std::uint64_t &memory_used,
-                std::uint64_t &evictions, std::uint64_t &admissions) {
+                std::uint64_t &evictions, std::uint64_t &admissions,
+                std::uint64_t &ram_hits, std::uint64_t &ssd_hits,
+                double &ssd_read_mb, double &ssd_write_mb,
+                std::uint64_t &ssd_bytes, double &fragmentation,
+                std::uint64_t &index_rebuild_ms) {
   auto value_of = [&](const std::string &k) {
     auto p = info.find(k + ":");
     if (p == std::string::npos)
@@ -112,6 +116,20 @@ void parse_info(const std::string &info, std::uint64_t &memory_used,
   memory_used = value_of("memory_used_bytes");
   evictions = value_of("evictions");
   admissions = value_of("admissions_rejected");
+  ram_hits = value_of("hits");
+  ssd_hits = value_of("ssd_hits");
+  ssd_bytes = value_of("ssd_bytes");
+  index_rebuild_ms = value_of("ssd_index_rebuild_ms");
+  auto value_of_d = [&](const std::string &k) {
+    auto p = info.find(k + ":");
+    if (p == std::string::npos)
+      return 0.0;
+    auto e = info.find('\n', p);
+    return std::stod(info.substr(p + k.size() + 1, e - p - k.size() - 1));
+  };
+  ssd_read_mb = value_of_d("ssd_read_mb");
+  ssd_write_mb = value_of_d("ssd_write_mb");
+  fragmentation = value_of_d("fragmentation_estimate");
 }
 
 int connect_server(const Options &opt) {
@@ -173,7 +191,10 @@ int main(int argc, char **argv) {
       std::mt19937_64 rng(opt.seed + static_cast<std::uint64_t>(t));
       std::uniform_int_distribution<int> uniform(0, opt.keyspace - 1);
       std::uniform_real_distribution<double> real(0.0, 1.0);
-      std::string value(static_cast<std::size_t>(opt.value_size), 'v');
+      int value_size = opt.value_size;
+      if (opt.workload == "tier_on_large_values")
+        value_size = std::max(value_size, 64 * 1024);
+      std::string value(static_cast<std::size_t>(value_size), 'v');
 
       while (std::chrono::steady_clock::now() < end_time) {
         std::vector<std::string> batch;
@@ -181,16 +202,20 @@ int main(int argc, char **argv) {
         batch.reserve(static_cast<std::size_t>(opt.pipeline));
         for (int i = 0; i < opt.pipeline; ++i) {
           int k = uniform(rng);
-          if (opt.workload == "hotset") {
+          if (opt.workload == "hotset" ||
+              opt.workload == "tier_on_large_values") {
             const double x = std::pow(real(rng), 2.0);
             k = static_cast<int>(x * std::max(1, opt.keyspace / 10));
           }
           bool do_set = false;
-          if (opt.workload == "writeheavy")
+          if (opt.workload == "writeheavy" ||
+              opt.workload == "tier_on_pressure_demotion")
             do_set = (real(rng) < 0.8);
-          else if (opt.workload == "mixed")
+          else if (opt.workload == "mixed" ||
+                   opt.workload == "tier_off_ram_only")
             do_set = (real(rng) < 0.35);
-          else if (opt.workload == "ttlheavy")
+          else if (opt.workload == "ttlheavy" ||
+                   opt.workload == "ttl_storm_with_tier")
             do_set = true;
           else if (opt.workload == "pipeline")
             do_set = (i % 2 == 0);
@@ -240,7 +265,9 @@ int main(int argc, char **argv) {
     th.join();
 
   int infofd = connect_server(opt);
-  std::uint64_t mem = 0, evictions = 0, admissions = 0;
+  std::uint64_t mem = 0, evictions = 0, admissions = 0, ram_hits = 0,
+                ssd_hits = 0, ssd_bytes = 0, index_rebuild_ms = 0;
+  double ssd_read_mb = 0.0, ssd_write_mb = 0.0, fragmentation = 0.0;
   if (infofd >= 0) {
     auto cmd = make_cmd({"INFO"});
     send(infofd, cmd.data(), cmd.size(), 0);
@@ -249,7 +276,9 @@ int main(int argc, char **argv) {
       auto crlf = rep->find("\r\n");
       int len = std::stoi(rep->substr(1, crlf - 1));
       std::string body = rep->substr(crlf + 2, len);
-      parse_info(body, mem, evictions, admissions);
+      parse_info(body, mem, evictions, admissions, ram_hits, ssd_hits,
+                 ssd_read_mb, ssd_write_mb, ssd_bytes, fragmentation,
+                 index_rebuild_ms);
     }
     close(infofd);
   }
@@ -272,8 +301,9 @@ int main(int argc, char **argv) {
   std::cout << std::fixed << std::setprecision(2) << "ops/s=" << ops_s
             << " p50_us=" << pct(0.50) << " p95_us=" << pct(0.95)
             << " p99_us=" << pct(0.99) << " p999_us=" << pct(0.999)
-            << " hit_rate=" << hit_rate << " memory_used=" << mem
-            << " evictions=" << evictions
+            << " hit_rate=" << hit_rate << " ram_hits=" << ram_hits
+            << " ssd_hits=" << ssd_hits << " ssd_bytes=" << ssd_bytes
+            << " memory_used=" << mem << " evictions=" << evictions
             << " admissions_rejected=" << admissions << "\n";
 
   std::ofstream out(opt.json_out);
@@ -285,6 +315,13 @@ int main(int argc, char **argv) {
       << "  \"p99_us\": " << pct(0.99) << ",\n"
       << "  \"p999_us\": " << pct(0.999) << ",\n"
       << "  \"hit_rate\": " << hit_rate << ",\n"
+      << "  \"ram_hits\": " << ram_hits << ",\n"
+      << "  \"ssd_hits\": " << ssd_hits << ",\n"
+      << "  \"ssd_bytes\": " << ssd_bytes << ",\n"
+      << "  \"ssd_read_mb\": " << ssd_read_mb << ",\n"
+      << "  \"ssd_write_mb\": " << ssd_write_mb << ",\n"
+      << "  \"ssd_index_rebuild_ms\": " << index_rebuild_ms << ",\n"
+      << "  \"fragmentation_estimate\": " << fragmentation << ",\n"
       << "  \"memory_used_bytes\": " << mem << ",\n"
       << "  \"evictions_per_sec\": "
       << (run_secs > 0 ? static_cast<double>(evictions) / run_secs : 0.0)

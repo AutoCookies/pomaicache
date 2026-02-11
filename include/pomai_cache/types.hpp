@@ -8,7 +8,7 @@
 
 namespace pomai_cache {
 
-using Clock = std::chrono::steady_clock;
+using Clock = std::chrono::system_clock;
 using TimePoint = Clock::time_point;
 
 struct Entry {
