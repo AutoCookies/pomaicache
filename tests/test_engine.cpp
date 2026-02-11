@@ -90,3 +90,28 @@ TEST_CASE("Param reload clamps and invalid schema rejected atomically",
   CHECK_FALSE(e.reload_params(bad, &err));
   CHECK(e.policy().params().version == p.version);
 }
+
+TEST_CASE("Tiered SSD placement and recovery metadata in INFO", "[engine][tier]") {
+  EngineConfig cfg;
+  cfg.memory_limit_bytes = 1024 * 1024;
+  cfg.max_key_len = 256;
+  cfg.max_value_size = 256 * 1024;
+  cfg.ttl_cleanup_per_tick = 16;
+  cfg.data_dir = "test_tier_data";
+  cfg.tier.ssd_enabled = true;
+  cfg.tier.ssd_value_min_bytes = 64;
+  cfg.tier.ram_max_bytes = 1024 * 1024;
+  cfg.fsync_mode = FsyncMode::Always;
+
+  Engine e(cfg, make_policy_by_name("lru"));
+  REQUIRE(e.set("big", std::vector<std::uint8_t>(128, 'b'), std::nullopt,
+                "default"));
+  CHECK_FALSE(e.get("missing").has_value());
+  auto v = e.get("big");
+  REQUIRE(v.has_value());
+  CHECK(v->size() == 128);
+
+  auto i = e.info();
+  CHECK(i.find("ssd_gets:") != std::string::npos);
+  CHECK(i.find("ssd_index_rebuild_ms:") != std::string::npos);
+}

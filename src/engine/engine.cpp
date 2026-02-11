@@ -38,9 +38,21 @@ bool extract_string(const std::string &text, const std::string &key,
 } // namespace
 
 Engine::Engine(EngineConfig cfg, std::unique_ptr<IEvictionPolicy> policy)
-    : cfg_(cfg), policy_(std::move(policy)) {
+    : cfg_(std::move(cfg)), policy_(std::move(policy)),
+      ssd_({cfg_.tier.ssd_enabled,
+            cfg_.data_dir,
+            cfg_.tier.ssd_value_min_bytes,
+            cfg_.tier.ssd_max_bytes,
+            cfg_.tier.ssd_max_read_mb_s,
+            cfg_.tier.ssd_max_write_mb_s,
+            512,
+            0.25,
+            cfg_.fsync_mode}) {
   owner_miss_cost_default_["default"] = 1.0;
   owner_miss_cost_default_["premium"] = 2.0;
+  if (cfg_.tier.ssd_enabled)
+    cfg_.memory_limit_bytes = cfg_.tier.ram_max_bytes;
+  ssd_.init();
 }
 
 bool Engine::set(const std::string &key, const std::vector<std::uint8_t> &value,
@@ -61,9 +73,8 @@ bool Engine::set(const std::string &key, const std::vector<std::uint8_t> &value,
   const std::string normalized_owner = owner.empty() ? "default" : owner;
   const auto owner_cap = policy_->params().owner_cap_bytes;
   std::size_t owner_used = owner_usage_[normalized_owner];
-  if (entries_.contains(key)) {
+  if (entries_.contains(key))
     owner_used -= entries_[key].size_bytes;
-  }
   if (owner_cap > 0 && owner_used + value.size() > owner_cap) {
     if (err)
       *err = "owner quota exceeded";
@@ -77,9 +88,8 @@ bool Engine::set(const std::string &key, const std::vector<std::uint8_t> &value,
   candidate.last_access = candidate.created_at;
   candidate.hit_count = 0;
   candidate.owner = normalized_owner;
-  if (ttl_ms.has_value()) {
+  if (ttl_ms.has_value())
     candidate.ttl_deadline = Clock::now() + std::chrono::milliseconds(*ttl_ms);
-  }
 
   CandidateView cv{key, &candidate, owner_miss_cost(candidate.owner)};
   if (!policy_->should_admit(cv)) {
@@ -87,6 +97,17 @@ bool Engine::set(const std::string &key, const std::vector<std::uint8_t> &value,
     if (err)
       *err = "admission rejected";
     return false;
+  }
+
+  ++seq_;
+  const bool to_ssd = cfg_.tier.ssd_enabled && value.size() >= cfg_.tier.ssd_value_min_bytes;
+  if (to_ssd) {
+    if (!ssd_.put(key, value, candidate.ttl_deadline, seq_, err))
+      return false;
+    if (entries_.contains(key))
+      erase_internal(key, false, false);
+    ssd_hit_count_[key] = 0;
+    return true;
   }
 
   if (entries_.contains(key)) {
@@ -113,53 +134,100 @@ bool Engine::set(const std::string &key, const std::vector<std::uint8_t> &value,
 
 std::optional<std::vector<std::uint8_t>> Engine::get(const std::string &key) {
   tick();
-  if (!exists_and_not_expired(key)) {
+  if (exists_and_not_expired(key)) {
+    auto &e = entries_[key];
+    e.last_access = Clock::now();
+    ++e.hit_count;
+    ++stats_.hits;
+    policy_->on_access(key, e);
+    return e.value;
+  }
+
+  if (!cfg_.tier.ssd_enabled) {
     ++stats_.misses;
     return std::nullopt;
   }
-  auto &e = entries_[key];
-  e.last_access = Clock::now();
-  ++e.hit_count;
+  SsdMeta m;
+  auto v = ssd_.get(key, &m);
+  if (!v.has_value()) {
+    ++stats_.misses;
+    return std::nullopt;
+  }
   ++stats_.hits;
-  policy_->on_access(key, e);
-  return e.value;
+
+  auto &hits = ssd_hit_count_[key];
+  hits++;
+  if (hits >= cfg_.tier.promotion_hits && v->size() < cfg_.tier.ssd_value_min_bytes) {
+    promote_queue_.push_back(key);
+    hits = 0;
+  }
+  return v;
 }
 
 std::size_t Engine::del(const std::vector<std::string> &keys) {
   tick();
   std::size_t removed = 0;
   for (const auto &k : keys) {
+    bool deleted = false;
     if (entries_.contains(k)) {
       erase_internal(k, false, false);
-      ++removed;
+      deleted = true;
     }
+    if (cfg_.tier.ssd_enabled && ssd_.contains(k)) {
+      ++seq_;
+      ssd_.del(k, seq_);
+      deleted = true;
+    }
+    if (deleted)
+      ++removed;
   }
   return removed;
 }
 
 bool Engine::expire(const std::string &key, std::uint64_t ttl_seconds) {
   tick();
-  if (!entries_.contains(key))
-    return false;
-  auto &e = entries_[key];
-  e.ttl_deadline = Clock::now() + std::chrono::seconds(ttl_seconds);
-  auto gen = ++expiry_generation_[key];
-  expiry_heap_.push({*e.ttl_deadline, key, gen});
-  return true;
+  auto deadline = Clock::now() + std::chrono::seconds(ttl_seconds);
+  if (entries_.contains(key)) {
+    auto &e = entries_[key];
+    e.ttl_deadline = deadline;
+    auto gen = ++expiry_generation_[key];
+    expiry_heap_.push({*e.ttl_deadline, key, gen});
+    return true;
+  }
+  if (cfg_.tier.ssd_enabled) {
+    auto v = ssd_.get(key);
+    if (v.has_value()) {
+      ++seq_;
+      return ssd_.put(key, *v, deadline, seq_);
+    }
+  }
+  return false;
 }
 
 std::optional<std::int64_t> Engine::ttl(const std::string &key) {
   tick();
-  if (!entries_.contains(key))
-    return std::nullopt;
-  auto &e = entries_[key];
-  if (!e.ttl_deadline.has_value())
-    return -1;
-  const auto now = Clock::now();
-  const auto secs =
-      std::chrono::duration_cast<std::chrono::seconds>(*e.ttl_deadline - now)
-          .count();
-  return std::max<std::int64_t>(-2, secs);
+  if (entries_.contains(key)) {
+    auto &e = entries_[key];
+    if (!e.ttl_deadline.has_value())
+      return -1;
+    const auto now = Clock::now();
+    const auto secs =
+        std::chrono::duration_cast<std::chrono::seconds>(*e.ttl_deadline - now)
+            .count();
+    return std::max<std::int64_t>(-2, secs);
+  }
+  if (cfg_.tier.ssd_enabled) {
+    SsdMeta m;
+    auto v = ssd_.get(key, &m);
+    if (!v.has_value())
+      return std::nullopt;
+    if (m.ttl_epoch_ms < 0)
+      return -1;
+    auto now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now().time_since_epoch()).count();
+    auto remain = (m.ttl_epoch_ms - now_ms) / 1000;
+    return std::max<std::int64_t>(-2, remain);
+  }
+  return std::nullopt;
 }
 
 std::vector<std::optional<std::vector<std::uint8_t>>>
@@ -185,12 +253,50 @@ void Engine::tick() {
       continue;
     if (expiry_generation_[key] != gen)
       continue;
-    if (entries_[key].ttl_deadline.has_value() &&
-        *entries_[key].ttl_deadline <= now) {
+    if (entries_[key].ttl_deadline.has_value() && *entries_[key].ttl_deadline <= now)
       erase_internal(key, false, true);
-    }
     ++cleaned;
   }
+  if (cfg_.tier.ssd_enabled)
+    ssd_.erase_expired(cfg_.ttl_cleanup_per_tick, now);
+
+  std::size_t tier_work = 0;
+  while (!promote_queue_.empty() && tier_work < cfg_.tier_work_per_tick) {
+    std::string key = promote_queue_.front();
+    promote_queue_.pop_front();
+    if (!entries_.contains(key)) {
+      SsdMeta m;
+      auto v = ssd_.get(key, &m);
+      if (v.has_value() && v->size() < cfg_.tier.ssd_value_min_bytes) {
+        std::optional<std::uint64_t> ttl_ms;
+        if (m.ttl_epoch_ms >= 0) {
+          auto now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now().time_since_epoch()).count();
+          if (m.ttl_epoch_ms > now_ms)
+            ttl_ms = static_cast<std::uint64_t>(m.ttl_epoch_ms - now_ms);
+        }
+        set(key, *v, ttl_ms, "default");
+        ++seq_;
+        ssd_.del(key, seq_);
+      }
+    }
+    ++tier_work;
+  }
+
+  maybe_enqueue_demotion();
+  while (!demote_queue_.empty() && tier_work < cfg_.tier_work_per_tick) {
+    auto key = demote_queue_.front();
+    demote_queue_.pop_front();
+    if (!entries_.contains(key)) {
+      ++tier_work;
+      continue;
+    }
+    ++seq_;
+    ssd_.put(key, entries_[key].value, entries_[key].ttl_deadline, seq_);
+    erase_internal(key, true, false);
+    ++tier_work;
+  }
+  if (cfg_.tier.ssd_enabled)
+    ssd_.maybe_compact();
 
   expiration_backlog_ = 0;
   auto snapshot = expiry_heap_;
@@ -216,6 +322,21 @@ std::string Engine::info() const {
   os << "evictions:" << stats_.evictions << "\n";
   os << "expirations:" << stats_.expirations << "\n";
   os << "admissions_rejected:" << stats_.admissions_rejected << "\n";
+  os << "ram_bytes:" << memory_used_ << "\n";
+  os << "ssd_bytes:" << ssd_.stats().bytes << "\n";
+  os << "ssd_gets:" << ssd_.stats().gets << "\n";
+  os << "ssd_hits:" << ssd_.stats().hits << "\n";
+  os << "ssd_misses:" << ssd_.stats().misses << "\n";
+  os << "promotions:" << ssd_.stats().promotions << "\n";
+  os << "demotions:" << ssd_.stats().demotions << "\n";
+  os << "ssd_read_mb:" << ssd_.stats().read_mb << "\n";
+  os << "ssd_write_mb:" << ssd_.stats().write_mb << "\n";
+  os << "tier_backlog:" << (promote_queue_.size() + demote_queue_.size()) << "\n";
+  os << "ssd_gc_runs:" << ssd_.stats().gc_runs << "\n";
+  os << "ssd_gc_bytes_reclaimed:" << ssd_.stats().gc_bytes_reclaimed << "\n";
+  os << "ssd_gc_time_ms:" << ssd_.stats().gc_time_ms << "\n";
+  os << "fragmentation_estimate:" << ssd_.stats().fragmentation_estimate << "\n";
+  os << "ssd_index_rebuild_ms:" << ssd_.stats().index_rebuild_ms << "\n";
 
   std::vector<std::pair<std::string, std::uint64_t>> counts;
   counts.reserve(entries_.size());
@@ -246,8 +367,7 @@ bool Engine::reload_params(const std::string &path, std::string *err) {
   std::stringstream ss;
   ss << in.rdbuf();
   const std::string text = ss.str();
-  if (text.find('{') == std::string::npos ||
-      text.find('}') == std::string::npos) {
+  if (text.find('{') == std::string::npos || text.find('}') == std::string::npos) {
     if (err)
       *err = "invalid schema";
     return false;
@@ -281,8 +401,7 @@ bool Engine::reload_params(const std::string &path, std::string *err) {
         u, static_cast<std::uint64_t>(1), static_cast<std::uint64_t>(1000000));
   if (extract_u64(text, "owner_cap_bytes", u))
     p.owner_cap_bytes = static_cast<std::size_t>(
-        std::clamp(u, static_cast<std::uint64_t>(0),
-                   static_cast<std::uint64_t>(1ULL << 40)));
+        std::clamp(u, static_cast<std::uint64_t>(0), static_cast<std::uint64_t>(1ULL << 40)));
   if (extract_string(text, "version", s))
     p.version = s;
 
@@ -307,8 +426,7 @@ bool Engine::exists_and_not_expired(const std::string &key) {
   return true;
 }
 
-void Engine::erase_internal(const std::string &key, bool eviction,
-                            bool expiration) {
+void Engine::erase_internal(const std::string &key, bool eviction, bool expiration) {
   if (!entries_.contains(key))
     return;
   owner_usage_[entries_[key].owner] -= entries_[key].size_bytes;
@@ -326,12 +444,27 @@ void Engine::erase_internal(const std::string &key, bool eviction,
 void Engine::evict_until_fit() {
   std::size_t safety = entries_.size() + 1;
   while (memory_used_ > cfg_.memory_limit_bytes && safety-- > 0) {
-    auto victim =
-        policy_->pick_victim(entries_, memory_used_, cfg_.memory_limit_bytes);
+    auto victim = policy_->pick_victim(entries_, memory_used_, cfg_.memory_limit_bytes);
     if (!victim.has_value())
       break;
+    if (cfg_.tier.ssd_enabled) {
+      demote_queue_.push_back(*victim);
+      break;
+    }
     erase_internal(*victim, true, false);
   }
+}
+
+void Engine::maybe_enqueue_demotion() {
+  if (!cfg_.tier.ssd_enabled)
+    return;
+  const double pressure = static_cast<double>(memory_used_) /
+                          std::max<std::size_t>(1, cfg_.memory_limit_bytes);
+  if (pressure < cfg_.tier.demotion_pressure)
+    return;
+  auto victim = policy_->pick_victim(entries_, memory_used_, cfg_.memory_limit_bytes);
+  if (victim.has_value())
+    demote_queue_.push_back(*victim);
 }
 
 double Engine::owner_miss_cost(const std::string &owner) const {

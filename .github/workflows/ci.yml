@@ -55,3 +55,31 @@ jobs:
           sleep 2
           printf '*1\r\n$4\r\nPING\r\n' | nc 127.0.0.1 6391 | head -n 1 | grep PONG
           docker rm -f pomai-cache-ci
+
+  crash-suite-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug
+      - name: Build
+        run: cmake --build build -j
+      - name: Run crash suite
+        run: cd build && ./pomai_cache_crash_harness everysec
+
+  tier-bench-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+      - name: Build
+        run: cmake --build build -j
+      - name: Run tier bench smoke
+        run: |
+          ./build/pomai_cache_server --port 6393 --ssd-enabled --ssd-value-min-bytes 256 --data-dir ./bench_smoke_data &
+          PID=$!
+          sleep 1
+          ./build/pomai_cache_netbench --port 6393 --workload tier_on_large_values --duration 2 --warmup 1 --clients 2 --pipeline 2 --json tier_smoke.json
+          kill -INT $PID
+          wait $PID

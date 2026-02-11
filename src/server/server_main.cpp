@@ -56,6 +56,15 @@ int main(int argc, char **argv) {
   std::size_t memory_limit = 64 * 1024 * 1024;
   std::string policy_mode = "pomai_cost";
   std::string params_path = "config/policy_params.json";
+  std::string data_dir = "./data";
+  bool ssd_enabled = false;
+  std::size_t ssd_value_min_bytes = 32 * 1024;
+  std::size_t ssd_max_bytes = 2ULL * 1024 * 1024 * 1024;
+  std::size_t promotion_hits = 3;
+  double demotion_pressure = 0.90;
+  std::size_t ssd_read_mb_s = 256;
+  std::size_t ssd_write_mb_s = 256;
+  std::string fsync_policy = "everysec";
 
   for (int i = 1; i < argc; ++i) {
     std::string a = argv[i];
@@ -67,11 +76,44 @@ int main(int argc, char **argv) {
       policy_mode = argv[++i];
     else if (a == "--params" && i + 1 < argc)
       params_path = argv[++i];
+    else if (a == "--data-dir" && i + 1 < argc)
+      data_dir = argv[++i];
+    else if (a == "--ssd-enabled")
+      ssd_enabled = true;
+    else if (a == "--ssd-value-min-bytes" && i + 1 < argc)
+      ssd_value_min_bytes = std::stoull(argv[++i]);
+    else if (a == "--ssd-max-bytes" && i + 1 < argc)
+      ssd_max_bytes = std::stoull(argv[++i]);
+    else if (a == "--promotion-hits" && i + 1 < argc)
+      promotion_hits = std::stoull(argv[++i]);
+    else if (a == "--demotion-pressure" && i + 1 < argc)
+      demotion_pressure = std::stod(argv[++i]);
+    else if (a == "--ssd-read-mb-s" && i + 1 < argc)
+      ssd_read_mb_s = std::stoull(argv[++i]);
+    else if (a == "--ssd-write-mb-s" && i + 1 < argc)
+      ssd_write_mb_s = std::stoull(argv[++i]);
+    else if (a == "--fsync" && i + 1 < argc)
+      fsync_policy = argv[++i];
   }
 
   auto policy = pomai_cache::make_policy_by_name(policy_mode);
-  pomai_cache::Engine engine({memory_limit, 256, 1024 * 1024, 128},
-                             std::move(policy));
+  pomai_cache::TierConfig tier_cfg{};
+  tier_cfg.ssd_enabled = ssd_enabled;
+  tier_cfg.ssd_value_min_bytes = ssd_value_min_bytes;
+  tier_cfg.ssd_max_bytes = ssd_max_bytes;
+  tier_cfg.ram_max_bytes = memory_limit;
+  tier_cfg.promotion_hits = promotion_hits;
+  tier_cfg.demotion_pressure = demotion_pressure;
+  tier_cfg.ssd_max_read_mb_s = ssd_read_mb_s;
+  tier_cfg.ssd_max_write_mb_s = ssd_write_mb_s;
+  pomai_cache::FsyncMode fsync_mode = pomai_cache::FsyncMode::EverySec;
+  if (upper(fsync_policy) == "NEVER")
+    fsync_mode = pomai_cache::FsyncMode::Never;
+  else if (upper(fsync_policy) == "ALWAYS")
+    fsync_mode = pomai_cache::FsyncMode::Always;
+  pomai_cache::EngineConfig engine_cfg{memory_limit, 256, 1024 * 1024, 128, 64,
+                                       data_dir, tier_cfg, fsync_mode};
+  pomai_cache::Engine engine(engine_cfg, std::move(policy));
   std::string reload_err;
   engine.reload_params(params_path, &reload_err);
 
