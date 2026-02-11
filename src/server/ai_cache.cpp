@@ -57,8 +57,8 @@ std::string canonical_rag_chunk_key(const std::string &source_id,
 std::string canonical_rerank_key(const std::string &query_hash,
                                  const std::string &index_epoch, int topk,
                                  const std::string &params_hash) {
-  return "rrk:" + query_hash + ":" + index_epoch + ":" +
-         std::to_string(topk) + ":" + params_hash;
+  return "rrk:" + query_hash + ":" + index_epoch + ":" + std::to_string(topk) +
+         ":" + params_hash;
 }
 std::string canonical_response_key(const std::string &prompt_hash,
                                    const std::string &params_hash,
@@ -74,8 +74,8 @@ AiArtifactCache::AiArtifactCache(Engine &engine) : engine_(engine) {
   owner_ttl_defaults_["rag"] = 6 * 60 * 60 * 1000ULL;
 }
 
-bool AiArtifactCache::parse_meta_json(const std::string &json, ArtifactMeta &out,
-                                      std::string *err) {
+bool AiArtifactCache::parse_meta_json(const std::string &json,
+                                      ArtifactMeta &out, std::string *err) {
   auto type = find_string(json, "artifact_type");
   auto owner = find_string(json, "owner");
   auto schema = find_string(json, "schema_version");
@@ -129,11 +129,12 @@ std::string AiArtifactCache::meta_to_json(const ArtifactMeta &m) {
   std::ostringstream os;
   os << "{\"artifact_type\":\"" << m.artifact_type << "\",\"owner\":\""
      << m.owner << "\",\"schema_version\":\"" << m.schema_version
-     << "\",\"model_id\":\"" << m.model_id << "\",\"created_at\":"
-     << m.created_at_ms << ",\"ttl_deadline\":" << m.ttl_ms
-     << ",\"size_bytes\":" << m.size_bytes << ",\"content_hash\":\""
-     << m.content_hash << "\",\"tenant\":\"local\",\"snapshot_epoch\":\""
-     << m.snapshot_epoch << "\",\"source_rev\":\"" << m.source_rev << "\"}";
+     << "\",\"model_id\":\"" << m.model_id
+     << "\",\"created_at\":" << m.created_at_ms
+     << ",\"ttl_deadline\":" << m.ttl_ms << ",\"size_bytes\":" << m.size_bytes
+     << ",\"content_hash\":\"" << m.content_hash
+     << "\",\"tenant\":\"local\",\"snapshot_epoch\":\"" << m.snapshot_epoch
+     << "\",\"source_rev\":\"" << m.source_rev << "\"}";
   return os.str();
 }
 
@@ -244,7 +245,8 @@ AiArtifactCache::mget(const std::vector<std::string> &keys) {
   return out;
 }
 
-void AiArtifactCache::index_key(const std::string &key, const ArtifactMeta &meta) {
+void AiArtifactCache::index_key(const std::string &key,
+                                const ArtifactMeta &meta) {
   if (!meta.snapshot_epoch.empty())
     epoch_index_[meta.snapshot_epoch].insert(key);
   if (!meta.model_id.empty())
@@ -270,8 +272,8 @@ void AiArtifactCache::deindex_key(const std::string &key, const KeyInfo &ki) {
   }
 }
 
-std::size_t AiArtifactCache::invalidate_keys(
-    const std::unordered_set<std::string> &keys) {
+std::size_t
+AiArtifactCache::invalidate_keys(const std::unordered_set<std::string> &keys) {
   std::size_t removed = 0;
   for (const auto &k : keys) {
     auto it = key_index_.find(k);

@@ -108,7 +108,8 @@ private:
   std::unordered_map<std::string, KeyInfo> key_index_;
   std::unordered_map<std::string, std::unordered_set<std::string>> epoch_index_;
   std::unordered_map<std::string, std::unordered_set<std::string>> model_index_;
-  std::unordered_map<std::string, std::unordered_set<std::string>> prefix_index_;
+  std::unordered_map<std::string, std::unordered_set<std::string>>
+      prefix_index_;
   std::unordered_map<std::string, std::uint64_t> owner_ttl_defaults_;
   std::size_t prefix_index_cap_{4096};
 };

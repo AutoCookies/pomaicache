@@ -14,11 +14,13 @@ TEST_CASE("AI canonical keys deterministic", "[ai][keys]") {
 }
 
 TEST_CASE("AI PUT/GET roundtrip and dedup", "[ai][roundtrip]") {
-  Engine e({4 * 1024 * 1024, 256, 1024 * 1024}, make_policy_by_name("pomai_cost"));
+  Engine e({4 * 1024 * 1024, 256, 1024 * 1024},
+           make_policy_by_name("pomai_cost"));
   AiArtifactCache ai(e);
 
   std::string meta =
-      "{\"artifact_type\":\"embedding\",\"owner\":\"vector\",\"schema_version\":\"v1\",\"model_id\":\"m\",\"snapshot_epoch\":\"ep1\"}";
+      "{\"artifact_type\":\"embedding\",\"owner\":\"vector\",\"schema_"
+      "version\":\"v1\",\"model_id\":\"m\",\"snapshot_epoch\":\"ep1\"}";
   std::vector<std::uint8_t> payload{1, 2, 3, 4};
   REQUIRE(ai.put("embedding", "k1", meta, payload));
   REQUIRE(ai.put("embedding", "k2", meta, payload));
@@ -32,12 +34,21 @@ TEST_CASE("AI PUT/GET roundtrip and dedup", "[ai][roundtrip]") {
 }
 
 TEST_CASE("AI invalidation by epoch and model", "[ai][invalidate]") {
-  Engine e({4 * 1024 * 1024, 256, 1024 * 1024}, make_policy_by_name("pomai_cost"));
+  Engine e({4 * 1024 * 1024, 256, 1024 * 1024},
+           make_policy_by_name("pomai_cost"));
   AiArtifactCache ai(e);
 
   std::vector<std::uint8_t> payload{9, 8, 7};
-  REQUIRE(ai.put("response", "rsp:1", "{\"artifact_type\":\"response\",\"owner\":\"response\",\"schema_version\":\"v1\",\"model_id\":\"m2\",\"snapshot_epoch\":\"e2\"}", payload));
-  REQUIRE(ai.put("response", "rsp:2", "{\"artifact_type\":\"response\",\"owner\":\"response\",\"schema_version\":\"v1\",\"model_id\":\"m3\",\"snapshot_epoch\":\"e3\"}", payload));
+  REQUIRE(
+      ai.put("response", "rsp:1",
+             "{\"artifact_type\":\"response\",\"owner\":\"response\",\"schema_"
+             "version\":\"v1\",\"model_id\":\"m2\",\"snapshot_epoch\":\"e2\"}",
+             payload));
+  REQUIRE(
+      ai.put("response", "rsp:2",
+             "{\"artifact_type\":\"response\",\"owner\":\"response\",\"schema_"
+             "version\":\"v1\",\"model_id\":\"m3\",\"snapshot_epoch\":\"e3\"}",
+             payload));
 
   REQUIRE(ai.invalidate_epoch("e2") == 1);
   REQUIRE(!ai.get("rsp:1").has_value());
@@ -55,6 +66,9 @@ TEST_CASE("AI meta and caps validation", "[ai][adversarial]") {
   REQUIRE(!ai.put("embedding", "k", "{\"owner\":\"vector\"}", payload, &err));
   REQUIRE(err.find("missing") != std::string::npos);
 
-  REQUIRE(!ai.put("embedding", "k", "{\"artifact_type\":\"embedding\",\"owner\":\"vector\",\"schema_version\":\"v1\"}", payload, &err));
+  REQUIRE(!ai.put("embedding", "k",
+                  "{\"artifact_type\":\"embedding\",\"owner\":\"vector\","
+                  "\"schema_version\":\"v1\"}",
+                  payload, &err));
   REQUIRE(err.find("blob put failed") != std::string::npos);
 }

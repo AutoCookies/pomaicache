@@ -346,11 +346,14 @@ int main(int argc, char **argv) {
           } else if (c == "AI.PUT") {
             if (cmd->size() != 5) {
               ++stats.rejected_requests;
-              st.out += pomai_cache::resp_error("AI.PUT <type> <key> <meta_json> <payload_bytes>");
+              st.out += pomai_cache::resp_error(
+                  "AI.PUT <type> <key> <meta_json> <payload_bytes>");
             } else {
-              std::vector<std::uint8_t> payload((*cmd)[4].begin(), (*cmd)[4].end());
+              std::vector<std::uint8_t> payload((*cmd)[4].begin(),
+                                                (*cmd)[4].end());
               std::string err;
-              if (!ai_cache.put((*cmd)[1], (*cmd)[2], (*cmd)[3], payload, &err)) {
+              if (!ai_cache.put((*cmd)[1], (*cmd)[2], (*cmd)[3], payload,
+                                &err)) {
                 ++stats.rejected_requests;
                 st.out += pomai_cache::resp_error(err);
               } else {
@@ -367,8 +370,10 @@ int main(int argc, char **argv) {
                 st.out += pomai_cache::resp_null();
               } else {
                 std::vector<std::string> arr{
-                    pomai_cache::resp_bulk(pomai_cache::AiArtifactCache::meta_to_json(v->meta)),
-                    pomai_cache::resp_bulk(std::string(v->payload.begin(), v->payload.end()))};
+                    pomai_cache::resp_bulk(
+                        pomai_cache::AiArtifactCache::meta_to_json(v->meta)),
+                    pomai_cache::resp_bulk(
+                        std::string(v->payload.begin(), v->payload.end()))};
                 st.out += pomai_cache::resp_array(arr);
               }
             }
@@ -385,8 +390,10 @@ int main(int argc, char **argv) {
                   arr.push_back(pomai_cache::resp_null());
                 } else {
                   std::vector<std::string> pair{
-                      pomai_cache::resp_bulk(pomai_cache::AiArtifactCache::meta_to_json(v->meta)),
-                      pomai_cache::resp_bulk(std::string(v->payload.begin(), v->payload.end()))};
+                      pomai_cache::resp_bulk(
+                          pomai_cache::AiArtifactCache::meta_to_json(v->meta)),
+                      pomai_cache::resp_bulk(
+                          std::string(v->payload.begin(), v->payload.end()))};
                   arr.push_back(pomai_cache::resp_array(pair));
                 }
               }
@@ -395,24 +402,31 @@ int main(int argc, char **argv) {
           } else if (c == "AI.EMB.PUT") {
             if (cmd->size() != 7) {
               ++stats.rejected_requests;
-              st.out += pomai_cache::resp_error("AI.EMB.PUT <key> <model_id> <dim> <dtype> <ttl_sec> <vector_bytes>");
+              st.out +=
+                  pomai_cache::resp_error("AI.EMB.PUT <key> <model_id> <dim> "
+                                          "<dtype> <ttl_sec> <vector_bytes>");
             } else {
               std::uint64_t dim = 0, ttl_s = 0;
               if (!parse_u64((*cmd)[3], dim) || !parse_u64((*cmd)[5], ttl_s)) {
                 ++stats.rejected_requests;
                 st.out += pomai_cache::resp_error("invalid numeric argument");
               } else {
-                if ((*cmd)[4] != "float" && (*cmd)[4] != "float16" && (*cmd)[4] != "int8") {
+                if ((*cmd)[4] != "float" && (*cmd)[4] != "float16" &&
+                    (*cmd)[4] != "int8") {
                   ++stats.rejected_requests;
                   st.out += pomai_cache::resp_error("invalid vector header");
                 } else {
-                  std::vector<std::uint8_t> payload((*cmd)[6].begin(), (*cmd)[6].end());
+                  std::vector<std::uint8_t> payload((*cmd)[6].begin(),
+                                                    (*cmd)[6].end());
                   std::ostringstream meta;
-                  meta << "{\"artifact_type\":\"embedding\",\"owner\":\"vector\",\"schema_version\":\"v1\","
-                       << "\"model_id\":\"" << (*cmd)[2] << "\",\"dim\":" << dim << ",\"dtype\":\"" << (*cmd)[4]
+                  meta << "{\"artifact_type\":\"embedding\",\"owner\":"
+                          "\"vector\",\"schema_version\":\"v1\","
+                       << "\"model_id\":\"" << (*cmd)[2] << "\",\"dim\":" << dim
+                       << ",\"dtype\":\"" << (*cmd)[4]
                        << "\",\"ttl_deadline\":" << (ttl_s * 1000ULL) << "}";
                   std::string err;
-                  if (!ai_cache.put("embedding", (*cmd)[1], meta.str(), payload, &err)) {
+                  if (!ai_cache.put("embedding", (*cmd)[1], meta.str(), payload,
+                                    &err)) {
                     ++stats.rejected_requests;
                     st.out += pomai_cache::resp_error(err);
                   } else {
@@ -431,15 +445,18 @@ int main(int argc, char **argv) {
                 st.out += pomai_cache::resp_null();
               } else {
                 std::vector<std::string> pair{
-                    pomai_cache::resp_bulk(pomai_cache::AiArtifactCache::meta_to_json(v->meta)),
-                    pomai_cache::resp_bulk(std::string(v->payload.begin(), v->payload.end()))};
+                    pomai_cache::resp_bulk(
+                        pomai_cache::AiArtifactCache::meta_to_json(v->meta)),
+                    pomai_cache::resp_bulk(
+                        std::string(v->payload.begin(), v->payload.end()))};
                 st.out += pomai_cache::resp_array(pair);
               }
             }
           } else if (c == "AI.INVALIDATE") {
             if (cmd->size() != 3) {
               ++stats.rejected_requests;
-              st.out += pomai_cache::resp_error("AI.INVALIDATE EPOCH|MODEL|PREFIX <value>");
+              st.out += pomai_cache::resp_error(
+                  "AI.INVALIDATE EPOCH|MODEL|PREFIX <value>");
             } else {
               auto mode = upper((*cmd)[1]);
               std::size_t n = 0;
@@ -451,7 +468,8 @@ int main(int argc, char **argv) {
                 n = ai_cache.invalidate_prefix((*cmd)[2]);
               else {
                 ++stats.rejected_requests;
-                st.out += pomai_cache::resp_error("AI.INVALIDATE EPOCH|MODEL|PREFIX <value>");
+                st.out += pomai_cache::resp_error(
+                    "AI.INVALIDATE EPOCH|MODEL|PREFIX <value>");
                 n = static_cast<std::size_t>(-1);
               }
               if (n != static_cast<std::size_t>(-1))
@@ -471,9 +489,11 @@ int main(int argc, char **argv) {
               } else {
                 auto mode = upper((*cmd)[1]);
                 if (mode == "HOT")
-                  st.out += pomai_cache::resp_bulk(ai_cache.top_hot(static_cast<std::size_t>(n)));
+                  st.out += pomai_cache::resp_bulk(
+                      ai_cache.top_hot(static_cast<std::size_t>(n)));
                 else if (mode == "COSTLY")
-                  st.out += pomai_cache::resp_bulk(ai_cache.top_costly(static_cast<std::size_t>(n)));
+                  st.out += pomai_cache::resp_bulk(
+                      ai_cache.top_costly(static_cast<std::size_t>(n)));
                 else {
                   ++stats.rejected_requests;
                   st.out += pomai_cache::resp_error("AI.TOP HOT|COSTLY [N]");

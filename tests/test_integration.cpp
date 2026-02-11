@@ -183,7 +183,11 @@ TEST_CASE("integration: AI artifact commands", "[integration][ai]") {
     return read_reply(fd);
   };
 
-  auto put = send_cmd({"AI.PUT", "embedding", "emb:m:h:3:float", "{\"artifact_type\":\"embedding\",\"owner\":\"vector\",\"schema_version\":\"v1\",\"model_id\":\"m\",\"snapshot_epoch\":\"ep9\"}", "abc"});
+  auto put = send_cmd(
+      {"AI.PUT", "embedding", "emb:m:h:3:float",
+       "{\"artifact_type\":\"embedding\",\"owner\":\"vector\",\"schema_"
+       "version\":\"v1\",\"model_id\":\"m\",\"snapshot_epoch\":\"ep9\"}",
+       "abc"});
   REQUIRE(put.has_value());
   REQUIRE(put->rfind("+OK", 0) == 0);
 
