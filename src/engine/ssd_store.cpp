@@ -10,8 +10,8 @@
 #include <string_view>
 
 #ifdef _WIN32
+#include <fcntl.h>
 #include <io.h>
-#include <windows.h>
 #else
 #include <fcntl.h>
 #include <sys/stat.h>
@@ -22,6 +22,19 @@ namespace pomai_cache {
 namespace {
 #ifdef _WIN32
 using ssize_t = std::ptrdiff_t;
+constexpr int PC_O_RDONLY = _O_RDONLY;
+constexpr int PC_O_RDWR = _O_RDWR;
+constexpr int PC_O_CREAT = _O_CREAT;
+constexpr int PC_O_APPEND = _O_APPEND;
+constexpr int PC_O_TRUNC = _O_TRUNC;
+#endif
+
+#ifndef _WIN32
+constexpr int PC_O_RDONLY = O_RDONLY;
+constexpr int PC_O_RDWR = O_RDWR;
+constexpr int PC_O_CREAT = O_CREAT;
+constexpr int PC_O_APPEND = O_APPEND;
+constexpr int PC_O_TRUNC = O_TRUNC;
 #endif
 
 #ifdef _WIN32
@@ -170,7 +183,7 @@ bool SsdStore::init(std::string *err) {
     active_segment_ = segments_.back().id;
   }
   auto p = seg_path(active_segment_);
-  active_fd_ = pc_open(p.c_str(), O_CREAT | O_RDWR | O_APPEND);
+  active_fd_ = pc_open(p.c_str(), PC_O_CREAT | PC_O_RDWR | PC_O_APPEND);
   if (active_fd_ < 0) {
     if (err)
       *err = "failed to open active segment";
@@ -280,7 +293,8 @@ void SsdStore::maybe_compact() {
   auto start = std::chrono::steady_clock::now();
   const std::uint32_t compact_id = segments_.back().id + 1;
   const std::string compact_path = seg_path(compact_id);
-  int fd = pc_open(compact_path.c_str(), O_CREAT | O_RDWR | O_TRUNC | O_APPEND);
+  int fd = pc_open(compact_path.c_str(),
+                   PC_O_CREAT | PC_O_RDWR | PC_O_TRUNC | PC_O_APPEND);
   if (fd < 0)
     return;
 
@@ -459,7 +473,7 @@ bool SsdStore::write_manifest() {
       out << "segment=" << s.id << "\n";
     out.flush();
   }
-  int fd = pc_open(tmp.c_str(), O_RDONLY);
+  int fd = pc_open(tmp.c_str(), PC_O_RDONLY);
   if (fd < 0)
     return false;
   bool ok = pc_fsync(fd) == 0;
@@ -473,7 +487,7 @@ bool SsdStore::write_manifest() {
 
 bool SsdStore::scan_segment(std::uint32_t id, bool repair_tail) {
   const std::string path = seg_path(id);
-  int fd = pc_open(path.c_str(), O_CREAT | O_RDWR);
+  int fd = pc_open(path.c_str(), PC_O_CREAT | PC_O_RDWR);
   if (fd < 0)
     return false;
   std::int64_t off = 0;
@@ -536,7 +550,7 @@ bool SsdStore::read_entry(const IndexEntry &e, std::vector<std::uint8_t> *value_
   if (!consume_read_budget(e.len + sizeof(RecordHeader)))
     return false;
   const std::string path = seg_path(e.segment_id);
-  int fd = pc_open(path.c_str(), O_RDONLY);
+  int fd = pc_open(path.c_str(), PC_O_RDONLY);
   if (fd < 0)
     return false;
   RecordHeader h{};
