@@ -9,12 +9,64 @@
 #include <fstream>
 #include <string_view>
 
+#ifdef _WIN32
+#include <io.h>
+#include <windows.h>
+#else
 #include <fcntl.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#endif
 
 namespace pomai_cache {
 namespace {
+#ifdef _WIN32
+using ssize_t = std::ptrdiff_t;
+#endif
+
+#ifdef _WIN32
+int pc_open(const char *path, int flags) {
+  return _open(path, flags | _O_BINARY, _S_IREAD | _S_IWRITE);
+}
+int pc_close(int fd) { return _close(fd); }
+ssize_t pc_write(int fd, const void *buf, std::size_t len) {
+  return _write(fd, buf, static_cast<unsigned int>(len));
+}
+ssize_t pc_read(int fd, void *buf, std::size_t len) {
+  return _read(fd, buf, static_cast<unsigned int>(len));
+}
+std::int64_t pc_seek(int fd, std::int64_t off, int whence) {
+  return _lseeki64(fd, off, whence);
+}
+int pc_fsync(int fd) { return _commit(fd); }
+int pc_truncate(int fd, std::int64_t len) { return _chsize_s(fd, len); }
+ssize_t pc_pread(int fd, void *buf, std::size_t len, std::int64_t off) {
+  auto cur = pc_seek(fd, 0, SEEK_CUR);
+  if (cur < 0)
+    return -1;
+  if (pc_seek(fd, off, SEEK_SET) < 0)
+    return -1;
+  auto r = pc_read(fd, buf, len);
+  pc_seek(fd, cur, SEEK_SET);
+  return r;
+}
+#else
+int pc_open(const char *path, int flags) { return open(path, flags, 0644); }
+int pc_close(int fd) { return close(fd); }
+ssize_t pc_write(int fd, const void *buf, std::size_t len) {
+  return write(fd, buf, len);
+}
+ssize_t pc_read(int fd, void *buf, std::size_t len) { return read(fd, buf, len); }
+std::int64_t pc_seek(int fd, std::int64_t off, int whence) {
+  return lseek(fd, off, whence);
+}
+int pc_fsync(int fd) { return fsync(fd); }
+int pc_truncate(int fd, std::int64_t len) { return ftruncate(fd, len); }
+ssize_t pc_pread(int fd, void *buf, std::size_t len, std::int64_t off) {
+  return pread(fd, buf, len, off);
+}
+#endif
+
 #pragma pack(push, 1)
 struct RecordHeader {
   std::uint32_t magic;
@@ -61,12 +113,17 @@ std::int64_t to_epoch_ms(std::optional<TimePoint> t) {
 }
 
 bool fsync_dir(const std::string &dir) {
+#ifdef _WIN32
+  (void)dir;
+  return true;
+#else
   int dfd = open(dir.c_str(), O_RDONLY | O_DIRECTORY);
   if (dfd < 0)
     return false;
   bool ok = ::fsync(dfd) == 0;
   close(dfd);
   return ok;
+#endif
 }
 
 } // namespace
@@ -113,7 +170,7 @@ bool SsdStore::init(std::string *err) {
     active_segment_ = segments_.back().id;
   }
   auto p = seg_path(active_segment_);
-  active_fd_ = open(p.c_str(), O_CREAT | O_RDWR | O_APPEND, 0644);
+  active_fd_ = pc_open(p.c_str(), O_CREAT | O_RDWR | O_APPEND);
   if (active_fd_ < 0) {
     if (err)
       *err = "failed to open active segment";
@@ -223,7 +280,7 @@ void SsdStore::maybe_compact() {
   auto start = std::chrono::steady_clock::now();
   const std::uint32_t compact_id = segments_.back().id + 1;
   const std::string compact_path = seg_path(compact_id);
-  int fd = open(compact_path.c_str(), O_CREAT | O_RDWR | O_TRUNC | O_APPEND, 0644);
+  int fd = pc_open(compact_path.c_str(), O_CREAT | O_RDWR | O_TRUNC | O_APPEND);
   if (fd < 0)
     return;
 
@@ -248,13 +305,13 @@ void SsdStore::maybe_compact() {
     h.tombstone = 0;
     h.offset_next = 0;
     h.checksum = checksum32(k, val, h);
-    off_t off = lseek(fd, 0, SEEK_END);
+    auto off = pc_seek(fd, 0, SEEK_END);
     if (off < 0)
       continue;
-    write(fd, &h, sizeof(h));
-    write(fd, k.data(), k.size());
+    pc_write(fd, &h, sizeof(h));
+    pc_write(fd, k.data(), k.size());
     if (!val.empty())
-      write(fd, val.data(), val.size());
+      pc_write(fd, val.data(), val.size());
     IndexEntry ne;
     ne.segment_id = compact_id;
     ne.offset = static_cast<std::uint64_t>(off);
@@ -265,8 +322,8 @@ void SsdStore::maybe_compact() {
     new_index[k] = ne;
     ++copied;
   }
-  fsync(fd);
-  close(fd);
+  pc_fsync(fd);
+  pc_close(fd);
   if (copied == 0) {
     std::filesystem::remove(compact_path);
     return;
@@ -324,14 +381,17 @@ bool SsdStore::append_record(const std::string &key, const std::vector<std::uint
   h.offset_next = 0;
   h.checksum = checksum32(key, value, h);
 
-  off_t off = lseek(active_fd_, 0, SEEK_END);
+  auto off = pc_seek(active_fd_, 0, SEEK_END);
   if (off < 0)
     return false;
-  if (write(active_fd_, &h, sizeof(h)) != static_cast<ssize_t>(sizeof(h)))
+  if (pc_write(active_fd_, &h, sizeof(h)) != static_cast<ssize_t>(sizeof(h)))
     return false;
-  if (write(active_fd_, key.data(), key.size()) != static_cast<ssize_t>(key.size()))
+  if (pc_write(active_fd_, key.data(), key.size()) !=
+      static_cast<ssize_t>(key.size()))
     return false;
-  if (!value.empty() && write(active_fd_, value.data(), value.size()) != static_cast<ssize_t>(value.size()))
+  if (!value.empty() &&
+      pc_write(active_fd_, value.data(), value.size()) !=
+          static_cast<ssize_t>(value.size()))
     return false;
   if (!sync_for_policy())
     return false;
@@ -359,14 +419,14 @@ bool SsdStore::sync_for_policy() {
   if (cfg_.fsync == FsyncMode::Never)
     return true;
   if (cfg_.fsync == FsyncMode::Always)
-    return ::fsync(active_fd_) == 0;
+    return pc_fsync(active_fd_) == 0;
   const auto now_s = static_cast<std::uint64_t>(
       std::chrono::duration_cast<std::chrono::seconds>(
           std::chrono::system_clock::now().time_since_epoch())
           .count());
   if (now_s != last_fsync_epoch_s_) {
     last_fsync_epoch_s_ = now_s;
-    return ::fsync(active_fd_) == 0;
+    return pc_fsync(active_fd_) == 0;
   }
   return true;
 }
@@ -399,11 +459,11 @@ bool SsdStore::write_manifest() {
       out << "segment=" << s.id << "\n";
     out.flush();
   }
-  int fd = open(tmp.c_str(), O_RDONLY);
+  int fd = pc_open(tmp.c_str(), O_RDONLY);
   if (fd < 0)
     return false;
-  bool ok = fsync(fd) == 0;
-  close(fd);
+  bool ok = pc_fsync(fd) == 0;
+  pc_close(fd);
   if (!ok)
     return false;
   if (rename(tmp.c_str(), final.c_str()) != 0)
@@ -413,40 +473,41 @@ bool SsdStore::write_manifest() {
 
 bool SsdStore::scan_segment(std::uint32_t id, bool repair_tail) {
   const std::string path = seg_path(id);
-  int fd = open(path.c_str(), O_CREAT | O_RDWR, 0644);
+  int fd = pc_open(path.c_str(), O_CREAT | O_RDWR);
   if (fd < 0)
     return false;
-  off_t off = 0;
+  std::int64_t off = 0;
   while (true) {
     RecordHeader h{};
-    ssize_t r = pread(fd, &h, sizeof(h), off);
+    ssize_t r = pc_pread(fd, &h, sizeof(h), off);
     if (r == 0)
       break;
     if (r != static_cast<ssize_t>(sizeof(h)) || h.magic != kMagic) {
       if (repair_tail)
-        ftruncate(fd, off);
+        pc_truncate(fd, off);
       break;
     }
     std::string key(h.key_len, '\0');
     std::vector<std::uint8_t> value(h.value_len);
-    if (pread(fd, key.data(), h.key_len, off + static_cast<off_t>(sizeof(h))) !=
+    if (pc_pread(fd, key.data(), h.key_len,
+                 off + static_cast<std::int64_t>(sizeof(h))) !=
         static_cast<ssize_t>(h.key_len)) {
       if (repair_tail)
-        ftruncate(fd, off);
+        pc_truncate(fd, off);
       break;
     }
     if (h.value_len > 0 &&
-        pread(fd, value.data(), h.value_len,
-              off + static_cast<off_t>(sizeof(h) + h.key_len)) !=
+        pc_pread(fd, value.data(), h.value_len,
+                 off + static_cast<std::int64_t>(sizeof(h) + h.key_len)) !=
             static_cast<ssize_t>(h.value_len)) {
       if (repair_tail)
-        ftruncate(fd, off);
+        pc_truncate(fd, off);
       break;
     }
     const auto sum = checksum32(key, value, h);
     if (sum != h.checksum) {
       if (repair_tail)
-        ftruncate(fd, off);
+        pc_truncate(fd, off);
       break;
     }
     IndexEntry e;
@@ -459,9 +520,9 @@ bool SsdStore::scan_segment(std::uint32_t id, bool repair_tail) {
     auto it = index_.find(key);
     if (it == index_.end() || it->second.seq <= e.seq)
       index_[key] = e;
-    off += static_cast<off_t>(sizeof(h) + h.key_len + h.value_len);
+    off += static_cast<std::int64_t>(sizeof(h) + h.key_len + h.value_len);
   }
-  close(fd);
+  pc_close(fd);
 
   live_bytes_ = 0;
   for (const auto &[_, e] : index_)
@@ -475,31 +536,31 @@ bool SsdStore::read_entry(const IndexEntry &e, std::vector<std::uint8_t> *value_
   if (!consume_read_budget(e.len + sizeof(RecordHeader)))
     return false;
   const std::string path = seg_path(e.segment_id);
-  int fd = open(path.c_str(), O_RDONLY);
+  int fd = pc_open(path.c_str(), O_RDONLY);
   if (fd < 0)
     return false;
   RecordHeader h{};
-  if (pread(fd, &h, sizeof(h), static_cast<off_t>(e.offset)) !=
+  if (pc_pread(fd, &h, sizeof(h), static_cast<std::int64_t>(e.offset)) !=
       static_cast<ssize_t>(sizeof(h))) {
-    close(fd);
+    pc_close(fd);
     return false;
   }
   std::string key(h.key_len, '\0');
-  if (pread(fd, key.data(), h.key_len,
-            static_cast<off_t>(e.offset + sizeof(h))) !=
+  if (pc_pread(fd, key.data(), h.key_len,
+               static_cast<std::int64_t>(e.offset + sizeof(h))) !=
       static_cast<ssize_t>(h.key_len)) {
-    close(fd);
+    pc_close(fd);
     return false;
   }
   value_out->assign(h.value_len, 0);
   if (h.value_len > 0 &&
-      pread(fd, value_out->data(), h.value_len,
-            static_cast<off_t>(e.offset + sizeof(h) + h.key_len)) !=
+      pc_pread(fd, value_out->data(), h.value_len,
+               static_cast<std::int64_t>(e.offset + sizeof(h) + h.key_len)) !=
           static_cast<ssize_t>(h.value_len)) {
-    close(fd);
+    pc_close(fd);
     return false;
   }
-  close(fd);
+  pc_close(fd);
   stats_.read_mb += static_cast<double>(h.value_len + sizeof(h)) / (1024.0 * 1024.0);
   return true;
 }

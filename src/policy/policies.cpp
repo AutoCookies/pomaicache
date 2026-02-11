@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <chrono>
 #include <limits>
+#include <memory>
 #include <unordered_map>
 
 namespace pomai_cache {
