@@ -111,8 +111,8 @@ int main(int argc, char **argv) {
     fsync_mode = pomai_cache::FsyncMode::Never;
   else if (upper(fsync_policy) == "ALWAYS")
     fsync_mode = pomai_cache::FsyncMode::Always;
-  pomai_cache::EngineConfig engine_cfg{memory_limit, 256, 1024 * 1024, 128, 64,
-                                       data_dir, tier_cfg, fsync_mode};
+  pomai_cache::EngineConfig engine_cfg{
+      memory_limit, 256, 1024 * 1024, 128, 64, data_dir, tier_cfg, fsync_mode};
   pomai_cache::Engine engine(engine_cfg, std::move(policy));
   std::string reload_err;
   engine.reload_params(params_path, &reload_err);

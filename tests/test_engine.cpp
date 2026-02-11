@@ -91,7 +91,8 @@ TEST_CASE("Param reload clamps and invalid schema rejected atomically",
   CHECK(e.policy().params().version == p.version);
 }
 
-TEST_CASE("Tiered SSD placement and recovery metadata in INFO", "[engine][tier]") {
+TEST_CASE("Tiered SSD placement and recovery metadata in INFO",
+          "[engine][tier]") {
   EngineConfig cfg;
   cfg.memory_limit_bytes = 1024 * 1024;
   cfg.max_key_len = 256;

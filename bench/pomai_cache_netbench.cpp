@@ -202,16 +202,20 @@ int main(int argc, char **argv) {
         batch.reserve(static_cast<std::size_t>(opt.pipeline));
         for (int i = 0; i < opt.pipeline; ++i) {
           int k = uniform(rng);
-          if (opt.workload == "hotset" || opt.workload == "tier_on_large_values") {
+          if (opt.workload == "hotset" ||
+              opt.workload == "tier_on_large_values") {
             const double x = std::pow(real(rng), 2.0);
             k = static_cast<int>(x * std::max(1, opt.keyspace / 10));
           }
           bool do_set = false;
-          if (opt.workload == "writeheavy" || opt.workload == "tier_on_pressure_demotion")
+          if (opt.workload == "writeheavy" ||
+              opt.workload == "tier_on_pressure_demotion")
             do_set = (real(rng) < 0.8);
-          else if (opt.workload == "mixed" || opt.workload == "tier_off_ram_only")
+          else if (opt.workload == "mixed" ||
+                   opt.workload == "tier_off_ram_only")
             do_set = (real(rng) < 0.35);
-          else if (opt.workload == "ttlheavy" || opt.workload == "ttl_storm_with_tier")
+          else if (opt.workload == "ttlheavy" ||
+                   opt.workload == "ttl_storm_with_tier")
             do_set = true;
           else if (opt.workload == "pipeline")
             do_set = (i % 2 == 0);
@@ -261,7 +265,8 @@ int main(int argc, char **argv) {
     th.join();
 
   int infofd = connect_server(opt);
-  std::uint64_t mem = 0, evictions = 0, admissions = 0, ram_hits = 0, ssd_hits = 0, ssd_bytes = 0, index_rebuild_ms = 0;
+  std::uint64_t mem = 0, evictions = 0, admissions = 0, ram_hits = 0,
+                ssd_hits = 0, ssd_bytes = 0, index_rebuild_ms = 0;
   double ssd_read_mb = 0.0, ssd_write_mb = 0.0, fragmentation = 0.0;
   if (infofd >= 0) {
     auto cmd = make_cmd({"INFO"});
@@ -271,7 +276,9 @@ int main(int argc, char **argv) {
       auto crlf = rep->find("\r\n");
       int len = std::stoi(rep->substr(1, crlf - 1));
       std::string body = rep->substr(crlf + 2, len);
-      parse_info(body, mem, evictions, admissions, ram_hits, ssd_hits, ssd_read_mb, ssd_write_mb, ssd_bytes, fragmentation, index_rebuild_ms);
+      parse_info(body, mem, evictions, admissions, ram_hits, ssd_hits,
+                 ssd_read_mb, ssd_write_mb, ssd_bytes, fragmentation,
+                 index_rebuild_ms);
     }
     close(infofd);
   }
@@ -294,8 +301,9 @@ int main(int argc, char **argv) {
   std::cout << std::fixed << std::setprecision(2) << "ops/s=" << ops_s
             << " p50_us=" << pct(0.50) << " p95_us=" << pct(0.95)
             << " p99_us=" << pct(0.99) << " p999_us=" << pct(0.999)
-            << " hit_rate=" << hit_rate << " ram_hits=" << ram_hits << " ssd_hits=" << ssd_hits << " ssd_bytes=" << ssd_bytes << " memory_used=" << mem
-            << " evictions=" << evictions
+            << " hit_rate=" << hit_rate << " ram_hits=" << ram_hits
+            << " ssd_hits=" << ssd_hits << " ssd_bytes=" << ssd_bytes
+            << " memory_used=" << mem << " evictions=" << evictions
             << " admissions_rejected=" << admissions << "\n";
 
   std::ofstream out(opt.json_out);

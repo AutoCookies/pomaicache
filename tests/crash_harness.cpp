@@ -33,7 +33,8 @@ bool read_line(int fd, std::string *line) {
   return false;
 }
 
-std::optional<std::string> request(int fd, const std::vector<std::string> &args) {
+std::optional<std::string> request(int fd,
+                                   const std::vector<std::string> &args) {
   auto q = cmd(args);
   if (send(fd, q.data(), q.size(), 0) < 0)
     return std::nullopt;
@@ -100,7 +101,8 @@ int main(int argc, char **argv) {
     for (int i = 0; i < 200; ++i) {
       std::string key = "k" + std::to_string((iter * 200 + i) % 200);
       std::string val = std::string((i % 64) + 1, 'a' + (i % 20));
-      auto a = request(fd, {"SET", key, val, "PX", std::to_string(500 + (i % 200))});
+      auto a =
+          request(fd, {"SET", key, val, "PX", std::to_string(500 + (i % 200))});
       if (a.has_value())
         model[key] = val;
       if (i % 7 == 0)
@@ -120,7 +122,8 @@ int main(int argc, char **argv) {
   for (int i = 0; i < 20; ++i)
     request(fd, {"GET", "k" + std::to_string(i)});
   auto info = request(fd, {"INFO"});
-  if (!info.has_value() || info->find("ssd_index_rebuild_ms") == std::string::npos)
+  if (!info.has_value() ||
+      info->find("ssd_index_rebuild_ms") == std::string::npos)
     return 4;
 
   close(fd);

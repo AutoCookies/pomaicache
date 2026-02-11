@@ -69,7 +69,9 @@ int pc_close(int fd) { return close(fd); }
 ssize_t pc_write(int fd, const void *buf, std::size_t len) {
   return write(fd, buf, len);
 }
-ssize_t pc_read(int fd, void *buf, std::size_t len) { return read(fd, buf, len); }
+ssize_t pc_read(int fd, void *buf, std::size_t len) {
+  return read(fd, buf, len);
+}
 std::int64_t pc_seek(int fd, std::int64_t off, int whence) {
   return lseek(fd, off, whence);
 }
@@ -97,7 +99,8 @@ struct RecordHeader {
 
 constexpr std::uint32_t kMagic = 0x504d3443; // PMC4
 
-std::uint32_t checksum32(const std::string &key, const std::vector<std::uint8_t> &value,
+std::uint32_t checksum32(const std::string &key,
+                         const std::vector<std::uint8_t> &value,
                          const RecordHeader &h) {
   std::uint32_t sum = 2166136261u;
   auto mix = [&](std::uint8_t b) {
@@ -121,7 +124,9 @@ std::uint32_t checksum32(const std::string &key, const std::vector<std::uint8_t>
 std::int64_t to_epoch_ms(std::optional<TimePoint> t) {
   if (!t.has_value())
     return -1;
-  auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(t->time_since_epoch()).count();
+  auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                t->time_since_epoch())
+                .count();
   return static_cast<std::int64_t>(ms);
 }
 
@@ -168,7 +173,9 @@ bool SsdStore::init(std::string *err) {
     }
     SegmentMeta sm;
     sm.id = s;
-    sm.bytes = std::filesystem::exists(seg_path(s)) ? std::filesystem::file_size(seg_path(s)) : 0;
+    sm.bytes = std::filesystem::exists(seg_path(s))
+                   ? std::filesystem::file_size(seg_path(s))
+                   : 0;
     segments_.push_back(sm);
     total_segment_bytes_ += sm.bytes;
   }
@@ -190,21 +197,27 @@ bool SsdStore::init(std::string *err) {
     return false;
   }
   stats_.bytes = live_bytes_;
-  stats_.fragmentation_estimate = total_segment_bytes_ == 0 ? 0.0 :
-      1.0 - static_cast<double>(live_bytes_) / static_cast<double>(total_segment_bytes_);
+  stats_.fragmentation_estimate =
+      total_segment_bytes_ == 0
+          ? 0.0
+          : 1.0 - static_cast<double>(live_bytes_) /
+                      static_cast<double>(total_segment_bytes_);
   stats_.index_rebuild_ms = static_cast<std::size_t>(
-      std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start)
+      std::chrono::duration_cast<std::chrono::milliseconds>(
+          std::chrono::steady_clock::now() - start)
           .count());
   return write_manifest();
 }
 
-bool SsdStore::put(const std::string &key, const std::vector<std::uint8_t> &value,
+bool SsdStore::put(const std::string &key,
+                   const std::vector<std::uint8_t> &value,
                    std::optional<TimePoint> ttl_deadline, std::uint64_t seq,
                    std::string *err) {
   if (!cfg_.enabled)
     return false;
   IndexEntry ie;
-  if (!append_record(key, value, to_epoch_ms(ttl_deadline), seq, false, &ie, err))
+  if (!append_record(key, value, to_epoch_ms(ttl_deadline), seq, false, &ie,
+                     err))
     return false;
   auto it = index_.find(key);
   if (it != index_.end() && !it->second.tombstone)
@@ -215,7 +228,8 @@ bool SsdStore::put(const std::string &key, const std::vector<std::uint8_t> &valu
   return true;
 }
 
-bool SsdStore::del(const std::string &key, std::uint64_t seq, std::string *err) {
+bool SsdStore::del(const std::string &key, std::uint64_t seq,
+                   std::string *err) {
   if (!cfg_.enabled)
     return false;
   IndexEntry ie;
@@ -232,14 +246,17 @@ bool SsdStore::del(const std::string &key, std::uint64_t seq, std::string *err) 
   return true;
 }
 
-std::optional<std::vector<std::uint8_t>> SsdStore::get(const std::string &key, SsdMeta *meta) {
+std::optional<std::vector<std::uint8_t>> SsdStore::get(const std::string &key,
+                                                       SsdMeta *meta) {
   ++stats_.gets;
   auto it = index_.find(key);
   if (it == index_.end() || it->second.tombstone) {
     ++stats_.misses;
     return std::nullopt;
   }
-  const auto now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now().time_since_epoch()).count();
+  const auto now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                          Clock::now().time_since_epoch())
+                          .count();
   if (it->second.ttl_epoch_ms >= 0 && it->second.ttl_epoch_ms <= now_ms) {
     index_.erase(it);
     ++stats_.misses;
@@ -265,10 +282,13 @@ bool SsdStore::contains(const std::string &key) const {
 }
 
 std::size_t SsdStore::erase_expired(std::size_t max_items, TimePoint now) {
-  const auto now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()).count();
+  const auto now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                          now.time_since_epoch())
+                          .count();
   std::size_t removed = 0;
   for (auto it = index_.begin(); it != index_.end() && removed < max_items;) {
-    if (!it->second.tombstone && it->second.ttl_epoch_ms >= 0 && it->second.ttl_epoch_ms <= now_ms) {
+    if (!it->second.tombstone && it->second.ttl_epoch_ms >= 0 &&
+        it->second.ttl_epoch_ms <= now_ms) {
       live_bytes_ -= it->second.len;
       it = index_.erase(it);
       ++removed;
@@ -285,8 +305,11 @@ void SsdStore::maybe_compact() {
     return;
   if (segments_.size() < 2)
     return;
-  stats_.fragmentation_estimate = total_segment_bytes_ == 0 ? 0.0 :
-      1.0 - static_cast<double>(live_bytes_) / static_cast<double>(total_segment_bytes_);
+  stats_.fragmentation_estimate =
+      total_segment_bytes_ == 0
+          ? 0.0
+          : 1.0 - static_cast<double>(live_bytes_) /
+                      static_cast<double>(total_segment_bytes_);
   if (stats_.fragmentation_estimate < cfg_.gc_fragmentation_threshold)
     return;
 
@@ -362,16 +385,20 @@ void SsdStore::maybe_compact() {
   if (reclaimed_before > reclaimed_after)
     stats_.gc_bytes_reclaimed += reclaimed_before - reclaimed_after;
   stats_.gc_time_ms += static_cast<std::uint64_t>(
-      std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start).count());
+      std::chrono::duration_cast<std::chrono::milliseconds>(
+          std::chrono::steady_clock::now() - start)
+          .count());
 }
 
 std::string SsdStore::seg_path(std::uint32_t id) const {
   return cfg_.dir + "/segment_" + std::to_string(id) + ".log";
 }
 
-bool SsdStore::append_record(const std::string &key, const std::vector<std::uint8_t> &value,
+bool SsdStore::append_record(const std::string &key,
+                             const std::vector<std::uint8_t> &value,
                              std::int64_t ttl_epoch_ms, std::uint64_t seq,
-                             bool tombstone, IndexEntry *entry, std::string *err) {
+                             bool tombstone, IndexEntry *entry,
+                             std::string *err) {
   refill_tokens();
   const std::size_t need = sizeof(RecordHeader) + key.size() + value.size();
   if (!consume_write_budget(need)) {
@@ -403,9 +430,8 @@ bool SsdStore::append_record(const std::string &key, const std::vector<std::uint
   if (pc_write(active_fd_, key.data(), key.size()) !=
       static_cast<ssize_t>(key.size()))
     return false;
-  if (!value.empty() &&
-      pc_write(active_fd_, value.data(), value.size()) !=
-          static_cast<ssize_t>(value.size()))
+  if (!value.empty() && pc_write(active_fd_, value.data(), value.size()) !=
+                            static_cast<ssize_t>(value.size()))
     return false;
   if (!sync_for_policy())
     return false;
@@ -445,7 +471,8 @@ bool SsdStore::sync_for_policy() {
   return true;
 }
 
-bool SsdStore::load_manifest(std::vector<std::uint32_t> *segments, std::uint32_t *active) {
+bool SsdStore::load_manifest(std::vector<std::uint32_t> *segments,
+                             std::uint32_t *active) {
   std::ifstream in(cfg_.dir + "/manifest.txt");
   if (!in.is_open())
     return false;
@@ -454,7 +481,8 @@ bool SsdStore::load_manifest(std::vector<std::uint32_t> *segments, std::uint32_t
     if (line.rfind("active=", 0) == 0)
       *active = static_cast<std::uint32_t>(std::stoul(line.substr(7)));
     if (line.rfind("segment=", 0) == 0)
-      segments->push_back(static_cast<std::uint32_t>(std::stoul(line.substr(8))));
+      segments->push_back(
+          static_cast<std::uint32_t>(std::stoul(line.substr(8))));
   }
   if (segments->empty())
     segments->push_back(*active);
@@ -545,7 +573,8 @@ bool SsdStore::scan_segment(std::uint32_t id, bool repair_tail) {
   return true;
 }
 
-bool SsdStore::read_entry(const IndexEntry &e, std::vector<std::uint8_t> *value_out) {
+bool SsdStore::read_entry(const IndexEntry &e,
+                          std::vector<std::uint8_t> *value_out) {
   refill_tokens();
   if (!consume_read_budget(e.len + sizeof(RecordHeader)))
     return false;
@@ -575,7 +604,8 @@ bool SsdStore::read_entry(const IndexEntry &e, std::vector<std::uint8_t> *value_
     return false;
   }
   pc_close(fd);
-  stats_.read_mb += static_cast<double>(h.value_len + sizeof(h)) / (1024.0 * 1024.0);
+  stats_.read_mb +=
+      static_cast<double>(h.value_len + sizeof(h)) / (1024.0 * 1024.0);
   return true;
 }
 

@@ -55,7 +55,8 @@ public:
   bool put(const std::string &key, const std::vector<std::uint8_t> &value,
            std::optional<TimePoint> ttl_deadline, std::uint64_t seq,
            std::string *err = nullptr);
-  bool del(const std::string &key, std::uint64_t seq, std::string *err = nullptr);
+  bool del(const std::string &key, std::uint64_t seq,
+           std::string *err = nullptr);
 
   std::optional<std::vector<std::uint8_t>> get(const std::string &key,
                                                SsdMeta *meta = nullptr);
@@ -82,11 +83,13 @@ private:
   };
 
   std::string seg_path(std::uint32_t id) const;
-  bool append_record(const std::string &key, const std::vector<std::uint8_t> &value,
-                     std::int64_t ttl_epoch_ms, std::uint64_t seq, bool tombstone,
-                     IndexEntry *entry, std::string *err);
+  bool append_record(const std::string &key,
+                     const std::vector<std::uint8_t> &value,
+                     std::int64_t ttl_epoch_ms, std::uint64_t seq,
+                     bool tombstone, IndexEntry *entry, std::string *err);
   bool sync_for_policy();
-  bool load_manifest(std::vector<std::uint32_t> *segments, std::uint32_t *active);
+  bool load_manifest(std::vector<std::uint32_t> *segments,
+                     std::uint32_t *active);
   bool write_manifest();
   bool scan_segment(std::uint32_t id, bool repair_tail);
   bool read_entry(const IndexEntry &e, std::vector<std::uint8_t> *value_out);

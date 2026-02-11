@@ -39,15 +39,9 @@ bool extract_string(const std::string &text, const std::string &key,
 
 Engine::Engine(EngineConfig cfg, std::unique_ptr<IEvictionPolicy> policy)
     : cfg_(std::move(cfg)), policy_(std::move(policy)),
-      ssd_({cfg_.tier.ssd_enabled,
-            cfg_.data_dir,
-            cfg_.tier.ssd_value_min_bytes,
-            cfg_.tier.ssd_max_bytes,
-            cfg_.tier.ssd_max_read_mb_s,
-            cfg_.tier.ssd_max_write_mb_s,
-            512,
-            0.25,
-            cfg_.fsync_mode}) {
+      ssd_({cfg_.tier.ssd_enabled, cfg_.data_dir, cfg_.tier.ssd_value_min_bytes,
+            cfg_.tier.ssd_max_bytes, cfg_.tier.ssd_max_read_mb_s,
+            cfg_.tier.ssd_max_write_mb_s, 512, 0.25, cfg_.fsync_mode}) {
   owner_miss_cost_default_["default"] = 1.0;
   owner_miss_cost_default_["premium"] = 2.0;
   if (cfg_.tier.ssd_enabled)
@@ -100,7 +94,8 @@ bool Engine::set(const std::string &key, const std::vector<std::uint8_t> &value,
   }
 
   ++seq_;
-  const bool to_ssd = cfg_.tier.ssd_enabled && value.size() >= cfg_.tier.ssd_value_min_bytes;
+  const bool to_ssd =
+      cfg_.tier.ssd_enabled && value.size() >= cfg_.tier.ssd_value_min_bytes;
   if (to_ssd) {
     if (!ssd_.put(key, value, candidate.ttl_deadline, seq_, err))
       return false;
@@ -157,7 +152,8 @@ std::optional<std::vector<std::uint8_t>> Engine::get(const std::string &key) {
 
   auto &hits = ssd_hit_count_[key];
   hits++;
-  if (hits >= cfg_.tier.promotion_hits && v->size() < cfg_.tier.ssd_value_min_bytes) {
+  if (hits >= cfg_.tier.promotion_hits &&
+      v->size() < cfg_.tier.ssd_value_min_bytes) {
     promote_queue_.push_back(key);
     hits = 0;
   }
@@ -223,7 +219,9 @@ std::optional<std::int64_t> Engine::ttl(const std::string &key) {
       return std::nullopt;
     if (m.ttl_epoch_ms < 0)
       return -1;
-    auto now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now().time_since_epoch()).count();
+    auto now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                      Clock::now().time_since_epoch())
+                      .count();
     auto remain = (m.ttl_epoch_ms - now_ms) / 1000;
     return std::max<std::int64_t>(-2, remain);
   }
@@ -253,7 +251,8 @@ void Engine::tick() {
       continue;
     if (expiry_generation_[key] != gen)
       continue;
-    if (entries_[key].ttl_deadline.has_value() && *entries_[key].ttl_deadline <= now)
+    if (entries_[key].ttl_deadline.has_value() &&
+        *entries_[key].ttl_deadline <= now)
       erase_internal(key, false, true);
     ++cleaned;
   }
@@ -270,7 +269,9 @@ void Engine::tick() {
       if (v.has_value() && v->size() < cfg_.tier.ssd_value_min_bytes) {
         std::optional<std::uint64_t> ttl_ms;
         if (m.ttl_epoch_ms >= 0) {
-          auto now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now().time_since_epoch()).count();
+          auto now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                            Clock::now().time_since_epoch())
+                            .count();
           if (m.ttl_epoch_ms > now_ms)
             ttl_ms = static_cast<std::uint64_t>(m.ttl_epoch_ms - now_ms);
         }
@@ -331,11 +332,13 @@ std::string Engine::info() const {
   os << "demotions:" << ssd_.stats().demotions << "\n";
   os << "ssd_read_mb:" << ssd_.stats().read_mb << "\n";
   os << "ssd_write_mb:" << ssd_.stats().write_mb << "\n";
-  os << "tier_backlog:" << (promote_queue_.size() + demote_queue_.size()) << "\n";
+  os << "tier_backlog:" << (promote_queue_.size() + demote_queue_.size())
+     << "\n";
   os << "ssd_gc_runs:" << ssd_.stats().gc_runs << "\n";
   os << "ssd_gc_bytes_reclaimed:" << ssd_.stats().gc_bytes_reclaimed << "\n";
   os << "ssd_gc_time_ms:" << ssd_.stats().gc_time_ms << "\n";
-  os << "fragmentation_estimate:" << ssd_.stats().fragmentation_estimate << "\n";
+  os << "fragmentation_estimate:" << ssd_.stats().fragmentation_estimate
+     << "\n";
   os << "ssd_index_rebuild_ms:" << ssd_.stats().index_rebuild_ms << "\n";
 
   std::vector<std::pair<std::string, std::uint64_t>> counts;
@@ -367,7 +370,8 @@ bool Engine::reload_params(const std::string &path, std::string *err) {
   std::stringstream ss;
   ss << in.rdbuf();
   const std::string text = ss.str();
-  if (text.find('{') == std::string::npos || text.find('}') == std::string::npos) {
+  if (text.find('{') == std::string::npos ||
+      text.find('}') == std::string::npos) {
     if (err)
       *err = "invalid schema";
     return false;
@@ -401,7 +405,8 @@ bool Engine::reload_params(const std::string &path, std::string *err) {
         u, static_cast<std::uint64_t>(1), static_cast<std::uint64_t>(1000000));
   if (extract_u64(text, "owner_cap_bytes", u))
     p.owner_cap_bytes = static_cast<std::size_t>(
-        std::clamp(u, static_cast<std::uint64_t>(0), static_cast<std::uint64_t>(1ULL << 40)));
+        std::clamp(u, static_cast<std::uint64_t>(0),
+                   static_cast<std::uint64_t>(1ULL << 40)));
   if (extract_string(text, "version", s))
     p.version = s;
 
@@ -426,7 +431,8 @@ bool Engine::exists_and_not_expired(const std::string &key) {
   return true;
 }
 
-void Engine::erase_internal(const std::string &key, bool eviction, bool expiration) {
+void Engine::erase_internal(const std::string &key, bool eviction,
+                            bool expiration) {
   if (!entries_.contains(key))
     return;
   owner_usage_[entries_[key].owner] -= entries_[key].size_bytes;
@@ -444,7 +450,8 @@ void Engine::erase_internal(const std::string &key, bool eviction, bool expirati
 void Engine::evict_until_fit() {
   std::size_t safety = entries_.size() + 1;
   while (memory_used_ > cfg_.memory_limit_bytes && safety-- > 0) {
-    auto victim = policy_->pick_victim(entries_, memory_used_, cfg_.memory_limit_bytes);
+    auto victim =
+        policy_->pick_victim(entries_, memory_used_, cfg_.memory_limit_bytes);
     if (!victim.has_value())
       break;
     if (cfg_.tier.ssd_enabled) {
@@ -462,7 +469,8 @@ void Engine::maybe_enqueue_demotion() {
                           std::max<std::size_t>(1, cfg_.memory_limit_bytes);
   if (pressure < cfg_.tier.demotion_pressure)
     return;
-  auto victim = policy_->pick_victim(entries_, memory_used_, cfg_.memory_limit_bytes);
+  auto victim =
+      policy_->pick_victim(entries_, memory_used_, cfg_.memory_limit_bytes);
   if (victim.has_value())
     demote_queue_.push_back(*victim);
 }
