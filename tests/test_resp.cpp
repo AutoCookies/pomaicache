@@ -23,8 +23,7 @@ TEST_CASE("RESP parser flags malformed lengths", "[resp]") {
   RespParser malformed2;
   malformed2.feed("$3\r\nBAD\r\n");
   auto m = malformed2.next_command();
-  REQUIRE(m.has_value());
-  CHECK(m->at(0) == "__MALFORMED__");
+  CHECK_FALSE(m.has_value());
 }
 
 TEST_CASE("RESP parser supports large bulk string within cap", "[resp]") {

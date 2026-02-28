@@ -1,19 +1,36 @@
-#pragma once
-
-#include <optional>
+#include <string_view>
 #include <string>
 #include <vector>
+#include <optional>
 
 namespace pomai_cache {
 
+/**
+ * Optimized Zero-Copy RESP Parser.
+ * Inspired by DragonflyDB's `facade::RedisParser` (src/facade/redis_parser.h).
+ */
 class RespParser {
 public:
-  void feed(const std::string &data);
+  enum class State {
+    IDLE,
+    ARRAY_LEN,
+    BULK_LEN,
+    BULK_DATA,
+    SIMPLE_STR,
+    ERROR_STR,
+    INTEGER
+  };
+
+  void feed(std::string_view data);
   std::optional<std::vector<std::string>> next_command();
 
 private:
-  bool parse_bulk_string(std::size_t &pos, std::string &out) const;
   std::string buffer_;
+  std::string_view view_;
+  State state_{State::IDLE};
+  int argc_{0};
+  int bulk_len_{0};
+  std::vector<std::string> current_cmd_;
 };
 
 std::string resp_simple(const std::string &s);

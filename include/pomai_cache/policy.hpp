@@ -1,6 +1,7 @@
 #pragma once
 
 #include "pomai_cache/types.hpp"
+#include "pomai_cache/pomai_table.hpp"
 
 #include <cstddef>
 #include <optional>
@@ -26,6 +27,7 @@ struct CandidateView {
   std::string key;
   const Entry *entry;
   double miss_cost;
+  std::uint16_t estimated_frequency{0};
 };
 
 class IEvictionPolicy {
@@ -37,7 +39,7 @@ public:
   virtual void on_access(const std::string &key, const Entry &entry) = 0;
   virtual void on_erase(const std::string &key) = 0;
   virtual std::optional<std::string>
-  pick_victim(const std::unordered_map<std::string, Entry> &entries,
+  pick_victim(const PomaiTable &entries,
               std::size_t memory_used, std::size_t memory_limit) = 0;
   virtual void set_params(const PolicyParams &params) = 0;
   virtual const PolicyParams &params() const = 0;

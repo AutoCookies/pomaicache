@@ -15,11 +15,16 @@ add_library(pomai_cache_core
   src/server/ai_cache.cpp
   src/metrics/info_metrics.cpp
   src/util/time.cpp
+  src/ds/bloom_filter.cpp
+  src/ds/count_min_sketch.cpp
+  src/ds/vector_index.cpp
+  src/ds/dep_graph.cpp
+  src/ds/compression.cpp
 )
 
 if(NOT WIN32)
   add_executable(pomai_cache_server src/server/server_main.cpp)
-  target_link_libraries(pomai_cache_server PRIVATE pomai_cache_core)
+  target_link_libraries(pomai_cache_server PRIVATE pomai_cache_core uring)
 
   add_executable(pomai_cache_cli apps/cli/main.cpp)
 
@@ -32,6 +37,9 @@ target_link_libraries(pomai_cache_bench PRIVATE pomai_cache_core)
 
 add_executable(pomai_cache_ai_bench bench/ai_artifact_bench.cpp)
 target_link_libraries(pomai_cache_ai_bench PRIVATE pomai_cache_core)
+
+add_executable(pomai_cache_vector_bench bench/vector_cache_bench.cpp)
+target_link_libraries(pomai_cache_vector_bench PRIVATE pomai_cache_core)
 
 include(CTest)
 if(BUILD_TESTING)

@@ -72,8 +72,9 @@ bool Engine::set(const std::string &key, const std::vector<std::uint8_t> &value,
   const std::string normalized_owner = owner.empty() ? "default" : owner;
   const auto owner_cap = policy_->params().owner_cap_bytes;
   std::size_t owner_used = owner_usage_[normalized_owner];
-  if (entries_.contains(key))
-    owner_used -= entries_[key].size_bytes;
+  auto* existing = entries_.get(key);
+  if (existing)
+    owner_used -= existing->size_bytes;
   if (owner_cap > 0 && owner_used + value.size() > owner_cap) {
     if (err)
       *err = "owner quota exceeded";
@@ -90,7 +91,9 @@ bool Engine::set(const std::string &key, const std::vector<std::uint8_t> &value,
   if (ttl_ms.has_value())
     candidate.ttl_deadline = Clock::now() + std::chrono::milliseconds(*ttl_ms);
 
-  CandidateView cv{key, &candidate, owner_miss_cost(candidate.owner)};
+  auto key_hash = std::hash<std::string>{}(key);
+  auto freq = frequency_sketch_.estimate(key_hash);
+  CandidateView cv{key, &candidate, owner_miss_cost(candidate.owner), freq};
   if (!policy_->should_admit(cv)) {
     ++stats_.admissions_rejected;
     if (err)
@@ -110,22 +113,23 @@ bool Engine::set(const std::string &key, const std::vector<std::uint8_t> &value,
     return true;
   }
 
-  if (entries_.contains(key)) {
-    owner_usage_[entries_[key].owner] -= entries_[key].size_bytes;
-    memory_used_ -= entries_[key].size_bytes;
-    bucket_used_ -= bucket_for(entries_[key].size_bytes);
+  if (auto* existing = entries_.get(key)) {
+    owner_usage_[existing->owner] -= existing->size_bytes;
+    memory_used_ -= existing->size_bytes;
+    bucket_used_ -= bucket_for(existing->size_bytes);
     policy_->on_erase(key);
   }
 
-  entries_[key] = std::move(candidate);
-  owner_usage_[entries_[key].owner] += entries_[key].size_bytes;
-  memory_used_ += entries_[key].size_bytes;
-  bucket_used_ += bucket_for(entries_[key].size_bytes);
-  policy_->on_insert(key, entries_[key]);
+  entries_.set(key, std::move(candidate));
+  auto* e = entries_.get(key);
+  owner_usage_[e->owner] += e->size_bytes;
+  memory_used_ += e->size_bytes;
+  bucket_used_ += bucket_for(e->size_bytes);
+  policy_->on_insert(key, *e);
 
-  if (entries_[key].ttl_deadline.has_value()) {
+  if (e->ttl_deadline.has_value()) {
     const auto gen = ++expiry_generation_[key];
-    expiry_heap_.push({*entries_[key].ttl_deadline, key, gen});
+    expiry_heap_.push({*e->ttl_deadline, key, gen});
   }
 
   evict_until_fit();
@@ -134,13 +138,20 @@ bool Engine::set(const std::string &key, const std::vector<std::uint8_t> &value,
 
 std::optional<std::vector<std::uint8_t>> Engine::get(const std::string &key) {
   tick();
-  if (exists_and_not_expired(key)) {
-    auto &e = entries_[key];
-    e.last_access = Clock::now();
-    ++e.hit_count;
+  auto key_hash = std::hash<std::string>{}(key);
+  frequency_sketch_.increment(key_hash);
+
+  if (auto* e = entries_.get(key)) {
+     if (e->ttl_deadline.has_value() && *e->ttl_deadline <= Clock::now()) {
+        erase_internal(key, false, true);
+        ++stats_.misses;
+        return std::nullopt;
+     }
+    e->last_access = Clock::now();
+    ++e->hit_count;
     ++stats_.hits;
-    policy_->on_access(key, e);
-    return e.value;
+    policy_->on_access(key, *e);
+    return e->value;
   }
 
   if (!cfg_.tier.ssd_enabled) {
@@ -188,11 +199,10 @@ std::size_t Engine::del(const std::vector<std::string> &keys) {
 bool Engine::expire(const std::string &key, std::uint64_t ttl_seconds) {
   tick();
   auto deadline = Clock::now() + std::chrono::seconds(ttl_seconds);
-  if (entries_.contains(key)) {
-    auto &e = entries_[key];
-    e.ttl_deadline = deadline;
+  if (auto* e = entries_.get(key)) {
+    e->ttl_deadline = deadline;
     auto gen = ++expiry_generation_[key];
-    expiry_heap_.push({*e.ttl_deadline, key, gen});
+    expiry_heap_.push({*e->ttl_deadline, key, gen});
     return true;
   }
   if (cfg_.tier.ssd_enabled) {
@@ -207,13 +217,12 @@ bool Engine::expire(const std::string &key, std::uint64_t ttl_seconds) {
 
 std::optional<std::int64_t> Engine::ttl(const std::string &key) {
   tick();
-  if (entries_.contains(key)) {
-    auto &e = entries_[key];
-    if (!e.ttl_deadline.has_value())
+  if (auto* e = entries_.get(key)) {
+    if (!e->ttl_deadline.has_value())
       return -1;
     const auto now = Clock::now();
     const auto secs =
-        std::chrono::duration_cast<std::chrono::seconds>(*e.ttl_deadline - now)
+        std::chrono::duration_cast<std::chrono::seconds>(*e->ttl_deadline - now)
             .count();
     return std::max<std::int64_t>(-2, secs);
   }
@@ -256,8 +265,9 @@ void Engine::tick() {
       continue;
     if (expiry_generation_[key] != gen)
       continue;
-    if (entries_[key].ttl_deadline.has_value() &&
-        *entries_[key].ttl_deadline <= now)
+    auto* e = entries_.get(key);
+    if (e->ttl_deadline.has_value() &&
+        *e->ttl_deadline <= now)
       erase_internal(key, false, true);
     ++cleaned;
   }
@@ -290,14 +300,15 @@ void Engine::tick() {
 
   maybe_enqueue_demotion();
   while (!demote_queue_.empty() && tier_work < cfg_.tier_work_per_tick) {
-    auto key = demote_queue_.front();
+    std::string key = demote_queue_.front();
     demote_queue_.pop_front();
-    if (!entries_.contains(key)) {
+    auto* e = entries_.get(key);
+    if (!e) {
       ++tier_work;
       continue;
     }
     ++seq_;
-    ssd_.put(key, entries_[key].value, entries_[key].ttl_deadline, seq_);
+    ssd_.put(key, e->value, e->ttl_deadline, seq_);
     erase_internal(key, true, false);
     ++tier_work;
   }
@@ -345,11 +356,16 @@ std::string Engine::info() const {
   os << "fragmentation_estimate:" << ssd_.stats().fragmentation_estimate
      << "\n";
   os << "ssd_index_rebuild_ms:" << ssd_.stats().index_rebuild_ms << "\n";
+  os << "frequency_sketch_memory_bytes:" << frequency_sketch_.memory_bytes()
+     << "\n";
+  os << "negative_bloom_memory_bytes:" << negative_bloom_.memory_bytes()
+     << "\n";
 
   std::vector<std::pair<std::string, std::uint64_t>> counts;
   counts.reserve(entries_.size());
-  for (const auto &[k, v] : entries_)
-    counts.emplace_back(k, v.hit_count);
+  entries_.iterate([&](const std::string& k, const Entry& v) {
+      counts.emplace_back(k, v.hit_count);
+  });
   std::sort(counts.begin(), counts.end(), [](const auto &a, const auto &b) {
     if (a.second == b.second)
       return a.first < b.first;
@@ -426,10 +442,10 @@ void Engine::set_policy(std::unique_ptr<IEvictionPolicy> policy) {
 }
 
 bool Engine::exists_and_not_expired(const std::string &key) {
-  if (!entries_.contains(key))
+  auto* e = entries_.get(key);
+  if (!e)
     return false;
-  auto &e = entries_[key];
-  if (e.ttl_deadline.has_value() && *e.ttl_deadline <= Clock::now()) {
+  if (e->ttl_deadline.has_value() && *e->ttl_deadline <= Clock::now()) {
     erase_internal(key, false, true);
     return false;
   }
@@ -438,11 +454,12 @@ bool Engine::exists_and_not_expired(const std::string &key) {
 
 void Engine::erase_internal(const std::string &key, bool eviction,
                             bool expiration) {
-  if (!entries_.contains(key))
+  auto* e = entries_.get(key);
+  if (!e)
     return;
-  owner_usage_[entries_[key].owner] -= entries_[key].size_bytes;
-  memory_used_ -= entries_[key].size_bytes;
-  bucket_used_ -= bucket_for(entries_[key].size_bytes);
+  owner_usage_[e->owner] -= e->size_bytes;
+  memory_used_ -= e->size_bytes;
+  bucket_used_ -= bucket_for(e->size_bytes);
   policy_->on_erase(key);
   entries_.erase(key);
   expiry_generation_.erase(key);
