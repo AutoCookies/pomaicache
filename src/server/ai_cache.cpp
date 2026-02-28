@@ -423,20 +423,19 @@ bool AiArtifactCache::sim_put(const std::string &key,
     return false;
   }
 
-  std::string type_str = "embedding";
   ArtifactMeta meta;
   if (!meta_json.empty())
     parse_meta_json(meta_json, meta, err);
 
   if (meta.artifact_type.empty())
-    meta.artifact_type = type_str;
+    meta.artifact_type = "embedding";
   if (meta.owner.empty())
     meta.owner = "vector";
   if (meta.schema_version.empty())
     meta.schema_version = "v1";
 
   std::string full_meta = meta_to_json(meta);
-  return put(type_str, key, full_meta, payload, err);
+  return put(meta.artifact_type, key, full_meta, payload, err);
 }
 
 std::vector<AiArtifactCache::SimSearchResult>

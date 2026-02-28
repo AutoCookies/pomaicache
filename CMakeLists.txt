@@ -38,6 +38,9 @@ target_link_libraries(pomai_cache_bench PRIVATE pomai_cache_core)
 add_executable(pomai_cache_ai_bench bench/ai_artifact_bench.cpp)
 target_link_libraries(pomai_cache_ai_bench PRIVATE pomai_cache_core)
 
+add_executable(pomai_cache_vector_bench bench/vector_cache_bench.cpp)
+target_link_libraries(pomai_cache_vector_bench PRIVATE pomai_cache_core)
+
 include(CTest)
 if(BUILD_TESTING)
   add_library(mini_catch_main third_party/catch2/catch_main.cpp)
