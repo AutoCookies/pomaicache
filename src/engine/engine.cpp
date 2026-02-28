@@ -91,7 +91,9 @@ bool Engine::set(const std::string &key, const std::vector<std::uint8_t> &value,
   if (ttl_ms.has_value())
     candidate.ttl_deadline = Clock::now() + std::chrono::milliseconds(*ttl_ms);
 
-  CandidateView cv{key, &candidate, owner_miss_cost(candidate.owner)};
+  auto key_hash = std::hash<std::string>{}(key);
+  auto freq = frequency_sketch_.estimate(key_hash);
+  CandidateView cv{key, &candidate, owner_miss_cost(candidate.owner), freq};
   if (!policy_->should_admit(cv)) {
     ++stats_.admissions_rejected;
     if (err)
@@ -136,6 +138,9 @@ bool Engine::set(const std::string &key, const std::vector<std::uint8_t> &value,
 
 std::optional<std::vector<std::uint8_t>> Engine::get(const std::string &key) {
   tick();
+  auto key_hash = std::hash<std::string>{}(key);
+  frequency_sketch_.increment(key_hash);
+
   if (auto* e = entries_.get(key)) {
      if (e->ttl_deadline.has_value() && *e->ttl_deadline <= Clock::now()) {
         erase_internal(key, false, true);
@@ -351,6 +356,10 @@ std::string Engine::info() const {
   os << "fragmentation_estimate:" << ssd_.stats().fragmentation_estimate
      << "\n";
   os << "ssd_index_rebuild_ms:" << ssd_.stats().index_rebuild_ms << "\n";
+  os << "frequency_sketch_memory_bytes:" << frequency_sketch_.memory_bytes()
+     << "\n";
+  os << "negative_bloom_memory_bytes:" << negative_bloom_.memory_bytes()
+     << "\n";
 
   std::vector<std::pair<std::string, std::uint64_t>> counts;
   counts.reserve(entries_.size());

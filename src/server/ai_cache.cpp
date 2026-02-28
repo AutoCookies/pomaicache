@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <numeric>
 #include <regex>
 #include <sstream>
 #include <tuple>
@@ -23,6 +24,14 @@ std::optional<std::uint64_t> find_u64(const std::string &json,
   if (!std::regex_search(json, m, re))
     return std::nullopt;
   return static_cast<std::uint64_t>(std::stoull(m[1].str()));
+}
+std::optional<double> find_double(const std::string &json,
+                                  const std::string &key) {
+  std::regex re("\"" + key + "\"\\s*:\\s*(-?[0-9]+\\.?[0-9]*)");
+  std::smatch m;
+  if (!std::regex_search(json, m, re))
+    return std::nullopt;
+  return std::stod(m[1].str());
 }
 double default_miss_cost(const std::string &type) {
   if (type == "embedding")
@@ -109,8 +118,14 @@ bool AiArtifactCache::parse_meta_json(const std::string &json,
     out.size_bytes = static_cast<std::size_t>(*v);
   if (auto v = find_string(json, "content_hash"))
     out.content_hash = *v;
-  if (auto v = find_u64(json, "miss_cost"))
-    out.miss_cost = static_cast<double>(*v);
+  if (auto v = find_double(json, "miss_cost"))
+    out.miss_cost = *v;
+  if (auto v = find_u64(json, "inference_tokens"))
+    out.inference_tokens = *v;
+  if (auto v = find_u64(json, "inference_latency_ms"))
+    out.inference_latency_ms = *v;
+  if (auto v = find_double(json, "dollar_cost"))
+    out.dollar_cost = *v;
   return true;
 }
 
@@ -134,7 +149,10 @@ std::string AiArtifactCache::meta_to_json(const ArtifactMeta &m) {
      << ",\"ttl_deadline\":" << m.ttl_ms << ",\"size_bytes\":" << m.size_bytes
      << ",\"content_hash\":\"" << m.content_hash
      << "\",\"tenant\":\"local\",\"snapshot_epoch\":\"" << m.snapshot_epoch
-     << "\",\"source_rev\":\"" << m.source_rev << "\"}";
+     << "\",\"source_rev\":\"" << m.source_rev
+     << "\",\"inference_tokens\":" << m.inference_tokens
+     << ",\"inference_latency_ms\":" << m.inference_latency_ms
+     << ",\"dollar_cost\":" << m.dollar_cost << "}";
   return os.str();
 }
 
@@ -143,6 +161,20 @@ std::uint64_t AiArtifactCache::ttl_default_ms(const std::string &owner) const {
   if (it == owner_ttl_defaults_.end())
     return 60 * 60 * 1000ULL;
   return it->second;
+}
+
+bool AiArtifactCache::check_budget() const {
+  if (budget_dollar_per_hour_ <= 0.0)
+    return true;
+  auto now = Clock::now();
+  auto elapsed =
+      std::chrono::duration_cast<std::chrono::seconds>(now - budget_window_start_)
+          .count();
+  if (elapsed >= 3600) {
+    budget_window_start_ = now;
+    budget_spent_this_hour_ = 0.0;
+  }
+  return true;
 }
 
 bool AiArtifactCache::put(const std::string &type, const std::string &key,
@@ -170,6 +202,8 @@ bool AiArtifactCache::put(const std::string &type, const std::string &key,
     meta.content_hash = fast_hash_hex(payload);
   if (meta.miss_cost <= 0)
     meta.miss_cost = default_miss_cost(type);
+  if (meta.dollar_cost <= 0.0)
+    meta.dollar_cost = meta.miss_cost * 0.001;
 
   const auto blob_key = "blob:" + meta.content_hash;
   std::optional<std::uint64_t> ttl_ms = meta.ttl_ms;
@@ -177,17 +211,34 @@ bool AiArtifactCache::put(const std::string &type, const std::string &key,
   if (key_index_.contains(key)) {
     auto prev = key_index_[key];
     deindex_key(key, prev);
+    dep_graph_.remove_node(key);
     auto itb = blob_index_.find(prev.blob_hash);
     if (itb != blob_index_.end() && itb->second.refcount > 0)
       --itb->second.refcount;
   }
 
+  const bool blob_likely_exists =
+      blob_bloom_.maybe_contains(meta.content_hash);
+
+  // Compress payload for stats tracking
+  auto compressed = CompressionEngine::compress(payload);
+  double ratio = CompressionEngine::compression_ratio(compressed);
+  total_compression_ratio_sum_ += ratio;
+  ++compression_count_;
+  stats_.avg_compression_ratio =
+      total_compression_ratio_sum_ / static_cast<double>(compression_count_);
+
   std::string set_err;
-  if (!engine_.set(blob_key, payload, ttl_ms, "vector", &set_err)) {
-    if (err)
-      *err = "blob put failed: " + set_err;
-    return false;
+  if (!blob_likely_exists ||
+      blob_index_.find(meta.content_hash) == blob_index_.end()) {
+    if (!engine_.set(blob_key, payload, ttl_ms, "vector", &set_err)) {
+      if (err)
+        *err = "blob put failed: " + set_err;
+      return false;
+    }
+    blob_bloom_.add(meta.content_hash);
   }
+
   std::vector<std::uint8_t> blob_ref(meta.content_hash.begin(),
                                      meta.content_hash.end());
   if (!engine_.set(key, blob_ref, ttl_ms, meta.owner, &set_err)) {
@@ -206,8 +257,12 @@ bool AiArtifactCache::put(const std::string &type, const std::string &key,
   ki.meta = meta;
   ki.blob_hash = meta.content_hash;
   ki.explain = "admit:score>threshold owner=" + meta.owner +
-               " type=" + meta.artifact_type;
+               " type=" + meta.artifact_type +
+               " dollar_cost=" + std::to_string(meta.dollar_cost);
   index_key(key, meta);
+
+  for (const auto &parent : meta.depends_on)
+    dep_graph_.add_edge(parent, key);
 
   ++stats_.puts;
   stats_.dedup_blobs = blob_index_.size();
@@ -233,7 +288,13 @@ std::optional<ArtifactValue> AiArtifactCache::get(const std::string &key) {
   }
   ++stats_.hits;
   ++it->second.hits;
-  return ArtifactValue{it->second.meta, *blob};
+
+  const auto &meta = it->second.meta;
+  stats_.total_dollar_saved += meta.dollar_cost;
+  stats_.total_tokens_saved += meta.inference_tokens;
+  stats_.total_latency_saved_ms += meta.inference_latency_ms;
+
+  return ArtifactValue{meta, *blob};
 }
 
 std::vector<std::optional<ArtifactValue>>
@@ -281,6 +342,8 @@ AiArtifactCache::invalidate_keys(const std::unordered_set<std::string> &keys) {
       continue;
     auto old = it->second;
     deindex_key(k, old);
+    dep_graph_.remove_node(k);
+    vector_index_.remove(k);
     auto bit = blob_index_.find(old.blob_hash);
     if (bit != blob_index_.end() && bit->second.refcount > 0) {
       --bit->second.refcount;
@@ -321,6 +384,231 @@ std::size_t AiArtifactCache::invalidate_prefix(const std::string &prefix) {
   return invalidate_keys(keys);
 }
 
+std::size_t AiArtifactCache::invalidate_cascade(const std::string &key) {
+  auto descendants = dep_graph_.descendants(key);
+  descendants.insert(key);
+  std::size_t removed = invalidate_keys(descendants);
+  stats_.cascade_invalidations += removed;
+  return removed;
+}
+
+// --- Feature 1: Similarity search ---
+
+bool AiArtifactCache::sim_put(const std::string &key,
+                               const std::vector<float> &vector,
+                               const std::vector<std::uint8_t> &payload,
+                               const std::string &meta_json,
+                               std::string *err) {
+  if (vector.empty()) {
+    if (err)
+      *err = "empty vector";
+    return false;
+  }
+
+  if (vector_index_.size() > 0 &&
+      vector.size() != vector_index_.dim()) {
+    vector_index_ =
+        VectorIndex(static_cast<std::uint32_t>(vector.size()),
+                    DistanceMetric::Cosine);
+  } else if (vector_index_.size() == 0 && vector_index_.dim() != vector.size()) {
+    vector_index_ =
+        VectorIndex(static_cast<std::uint32_t>(vector.size()),
+                    DistanceMetric::Cosine);
+  }
+
+  if (!vector_index_.insert(key, vector.data(),
+                            static_cast<std::uint32_t>(vector.size()))) {
+    if (err)
+      *err = "vector insert failed";
+    return false;
+  }
+
+  std::string type_str = "embedding";
+  ArtifactMeta meta;
+  if (!meta_json.empty())
+    parse_meta_json(meta_json, meta, err);
+
+  if (meta.artifact_type.empty())
+    meta.artifact_type = type_str;
+  if (meta.owner.empty())
+    meta.owner = "vector";
+  if (meta.schema_version.empty())
+    meta.schema_version = "v1";
+
+  std::string full_meta = meta_to_json(meta);
+  return put(type_str, key, full_meta, payload, err);
+}
+
+std::vector<AiArtifactCache::SimSearchResult>
+AiArtifactCache::sim_get(const std::vector<float> &query, std::size_t top_k,
+                          float threshold) {
+  ++stats_.sim_queries;
+
+  auto results = vector_index_.search(
+      query.data(), static_cast<std::uint32_t>(query.size()), top_k, threshold);
+
+  std::vector<SimSearchResult> out;
+  out.reserve(results.size());
+
+  for (const auto &r : results) {
+    auto val = get(r.key);
+    if (val.has_value()) {
+      ++stats_.sim_hits;
+      out.push_back({r.key, r.score, std::move(*val)});
+    }
+  }
+  return out;
+}
+
+// --- Feature 2: Token economics ---
+
+CostReport AiArtifactCache::cost_report() const {
+  CostReport report;
+  report.total_dollar_saved = stats_.total_dollar_saved;
+  report.total_tokens_saved = stats_.total_tokens_saved;
+  report.total_latency_saved_ms = stats_.total_latency_saved_ms;
+  report.total_hits = stats_.hits;
+
+  auto now = Clock::now();
+  auto uptime_hours =
+      std::chrono::duration<double, std::ratio<3600>>(
+          now - budget_window_start_)
+          .count();
+  if (uptime_hours > 0.001)
+    report.dollars_per_hour = stats_.total_dollar_saved / uptime_hours;
+
+  return report;
+}
+
+void AiArtifactCache::set_budget(double max_dollar_per_hour) {
+  budget_dollar_per_hour_ = max_dollar_per_hour;
+  budget_window_start_ = Clock::now();
+  budget_spent_this_hour_ = 0.0;
+}
+
+// --- Feature 3: Pipeline cascade ---
+
+bool AiArtifactCache::put_with_deps(const std::string &type,
+                                     const std::string &key,
+                                     const std::string &meta_json,
+                                     const std::vector<std::uint8_t> &payload,
+                                     const std::vector<std::string> &depends_on,
+                                     std::string *err) {
+  ArtifactMeta meta;
+  if (!parse_meta_json(meta_json, meta, err))
+    return false;
+  meta.depends_on = depends_on;
+  std::string enriched_json = meta_to_json(meta);
+
+  if (!put(type, key, enriched_json, payload, err))
+    return false;
+
+  for (const auto &parent : depends_on)
+    dep_graph_.add_edge(parent, key);
+
+  return true;
+}
+
+std::vector<std::string>
+AiArtifactCache::get_dependents(const std::string &key) const {
+  auto desc = dep_graph_.descendants(key);
+  return {desc.begin(), desc.end()};
+}
+
+// --- Feature 6: Streaming ---
+
+bool AiArtifactCache::stream_begin(const std::string &key,
+                                    const std::string &meta_json,
+                                    std::string *err) {
+  if (streams_.contains(key)) {
+    if (err)
+      *err = "stream already in progress";
+    return false;
+  }
+
+  StreamEntry se;
+  if (!parse_meta_json(meta_json, se.meta, err))
+    return false;
+
+  const auto now_ms = static_cast<std::uint64_t>(
+      std::chrono::duration_cast<std::chrono::milliseconds>(
+          Clock::now().time_since_epoch())
+          .count());
+  if (se.meta.created_at_ms == 0)
+    se.meta.created_at_ms = now_ms;
+  if (se.meta.ttl_ms == 0)
+    se.meta.ttl_ms = ttl_default_ms(se.meta.owner);
+
+  streams_[key] = std::move(se);
+  ++stats_.stream_begins;
+  return true;
+}
+
+bool AiArtifactCache::stream_append(const std::string &key,
+                                     const std::vector<std::uint8_t> &chunk,
+                                     std::string *err) {
+  auto it = streams_.find(key);
+  if (it == streams_.end()) {
+    if (err)
+      *err = "no active stream for key";
+    return false;
+  }
+  if (it->second.finalized) {
+    if (err)
+      *err = "stream already finalized";
+    return false;
+  }
+  it->second.chunks.push_back(chunk);
+  return true;
+}
+
+bool AiArtifactCache::stream_end(const std::string &key, std::string *err) {
+  auto it = streams_.find(key);
+  if (it == streams_.end()) {
+    if (err)
+      *err = "no active stream for key";
+    return false;
+  }
+
+  it->second.finalized = true;
+
+  std::vector<std::uint8_t> combined;
+  for (const auto &chunk : it->second.chunks) {
+    combined.insert(combined.end(), chunk.begin(), chunk.end());
+  }
+
+  auto &meta = it->second.meta;
+  meta.size_bytes = combined.size();
+  if (meta.content_hash.empty())
+    meta.content_hash = fast_hash_hex(combined);
+  if (meta.miss_cost <= 0)
+    meta.miss_cost = default_miss_cost(meta.artifact_type);
+  if (meta.dollar_cost <= 0.0)
+    meta.dollar_cost = meta.miss_cost * 0.001;
+
+  std::string meta_json = meta_to_json(meta);
+  bool ok = put(meta.artifact_type, key, meta_json, combined, err);
+
+  streams_.erase(it);
+  if (ok)
+    ++stats_.stream_completions;
+  return ok;
+}
+
+std::optional<ArtifactValue>
+AiArtifactCache::stream_get(const std::string &key) {
+  auto it = streams_.find(key);
+  if (it != streams_.end() && !it->second.chunks.empty()) {
+    std::vector<std::uint8_t> partial;
+    for (const auto &chunk : it->second.chunks)
+      partial.insert(partial.end(), chunk.begin(), chunk.end());
+    return ArtifactValue{it->second.meta, std::move(partial)};
+  }
+  return get(key);
+}
+
+// --- Introspection ---
+
 std::string AiArtifactCache::stats() const {
   std::ostringstream os;
   os << "puts:" << stats_.puts << "\n";
@@ -329,6 +617,21 @@ std::string AiArtifactCache::stats() const {
   os << "misses:" << stats_.misses << "\n";
   os << "dedup_hits:" << stats_.dedup_hits << "\n";
   os << "blob_count:" << blob_index_.size() << "\n";
+  os << "total_dollar_saved:" << stats_.total_dollar_saved << "\n";
+  os << "total_tokens_saved:" << stats_.total_tokens_saved << "\n";
+  os << "total_latency_saved_ms:" << stats_.total_latency_saved_ms << "\n";
+  os << "sim_queries:" << stats_.sim_queries << "\n";
+  os << "sim_hits:" << stats_.sim_hits << "\n";
+  os << "cascade_invalidations:" << stats_.cascade_invalidations << "\n";
+  os << "stream_begins:" << stats_.stream_begins << "\n";
+  os << "stream_completions:" << stats_.stream_completions << "\n";
+  os << "avg_compression_ratio:" << stats_.avg_compression_ratio << "\n";
+  os << "vector_index_size:" << vector_index_.size() << "\n";
+  os << "vector_index_memory_bytes:" << vector_index_.memory_bytes() << "\n";
+  os << "dep_graph_edges:" << dep_graph_.edge_count() << "\n";
+  os << "active_streams:" << streams_.size() << "\n";
+  os << "budget_dollar_per_hour:" << budget_dollar_per_hour_ << "\n";
+
   std::vector<std::tuple<std::string, std::uint64_t, std::uint64_t>> by_type;
   std::unordered_map<std::string, std::uint64_t> cnt;
   for (const auto &[k, v] : key_index_)
@@ -361,7 +664,7 @@ std::string AiArtifactCache::top_costly(std::size_t n) const {
   std::vector<std::pair<std::string, double>> rows;
   rows.reserve(key_index_.size());
   for (const auto &[k, v] : key_index_)
-    rows.emplace_back(k, v.meta.miss_cost);
+    rows.emplace_back(k, v.meta.dollar_cost);
   std::sort(rows.begin(), rows.end(), [](const auto &a, const auto &b) {
     if (a.second == b.second)
       return a.first < b.first;
@@ -377,7 +680,19 @@ std::string AiArtifactCache::explain(const std::string &key) const {
   auto it = key_index_.find(key);
   if (it == key_index_.end())
     return "MISS:no metadata";
-  return it->second.explain;
+  std::ostringstream os;
+  os << it->second.explain;
+  auto parents = dep_graph_.parents(key);
+  if (!parents.empty()) {
+    os << " depends_on=[";
+    for (std::size_t i = 0; i < parents.size(); ++i) {
+      if (i)
+        os << ",";
+      os << parents[i];
+    }
+    os << "]";
+  }
+  return os.str();
 }
 
 } // namespace pomai_cache

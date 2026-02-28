@@ -27,6 +27,7 @@ struct CandidateView {
   std::string key;
   const Entry *entry;
   double miss_cost;
+  std::uint16_t estimated_frequency{0};
 };
 
 class IEvictionPolicy {

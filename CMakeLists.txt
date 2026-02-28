@@ -15,6 +15,11 @@ add_library(pomai_cache_core
   src/server/ai_cache.cpp
   src/metrics/info_metrics.cpp
   src/util/time.cpp
+  src/ds/bloom_filter.cpp
+  src/ds/count_min_sketch.cpp
+  src/ds/vector_index.cpp
+  src/ds/dep_graph.cpp
+  src/ds/compression.cpp
 )
 
 if(NOT WIN32)

@@ -1,4 +1,6 @@
 #include "pomai_cache/engine.hpp"
+#include "pomai_cache/bloom_filter.hpp"
+#include "pomai_cache/count_min_sketch.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -115,4 +117,74 @@ TEST_CASE("Tiered SSD placement and recovery metadata in INFO",
   auto i = e.info();
   CHECK(i.find("ssd_gets:") != std::string::npos);
   CHECK(i.find("ssd_index_rebuild_ms:") != std::string::npos);
+}
+
+TEST_CASE("BloomFilter basic add/query semantics", "[bloom]") {
+  BloomFilter bf(1000, 0.01);
+  CHECK(bf.add("hello"));
+  CHECK(bf.add("world"));
+  CHECK(bf.maybe_contains("hello"));
+  CHECK(bf.maybe_contains("world"));
+  CHECK_FALSE(bf.maybe_contains("missing"));
+
+  CHECK_FALSE(bf.add("hello"));
+
+  bf.reset();
+  CHECK_FALSE(bf.maybe_contains("hello"));
+}
+
+TEST_CASE("BloomFilter false positive rate within bounds", "[bloom]") {
+  BloomFilter bf(10000, 0.01);
+  for (int i = 0; i < 5000; ++i)
+    bf.add("key-" + std::to_string(i));
+
+  int false_positives = 0;
+  for (int i = 50000; i < 60000; ++i) {
+    if (bf.maybe_contains("miss-" + std::to_string(i)))
+      ++false_positives;
+  }
+  CHECK(false_positives < 300);
+}
+
+TEST_CASE("ScalableBloomFilter grows and queries across filters",
+          "[bloom][scalable]") {
+  ScalableBloomFilter sbf(100, 0.01);
+  for (int i = 0; i < 500; ++i) {
+    sbf.add("item-" + std::to_string(i));
+  }
+  for (int i = 0; i < 500; ++i) {
+    CHECK(sbf.maybe_contains("item-" + std::to_string(i)));
+  }
+  CHECK(sbf.memory_bytes() > 0);
+}
+
+TEST_CASE("CountMinSketch increment and estimate", "[cms]") {
+  CountMinSketch cms(0.001, 0.01);
+  cms.increment(42, 5);
+  cms.increment(42, 3);
+  cms.increment(99, 1);
+  CHECK(cms.estimate(42) >= 8);
+  CHECK(cms.estimate(99) >= 1);
+  CHECK(cms.estimate(1234) == 0);
+
+  cms.reset();
+  CHECK(cms.estimate(42) == 0);
+}
+
+TEST_CASE("CountMinSketch saturating add does not overflow", "[cms]") {
+  CountMinSketch cms(0.001, 0.01);
+  for (int i = 0; i < 70000; ++i)
+    cms.increment(7);
+  auto est = cms.estimate(7);
+  CHECK(est == 65535);
+}
+
+TEST_CASE("Engine INFO includes frequency sketch and bloom stats",
+          "[engine][ds]") {
+  Engine e({2048, 256, 1024, 16}, make_policy_by_name("pomai_cost"));
+  REQUIRE(e.set("k", std::vector<std::uint8_t>{'v'}, std::nullopt, "default"));
+  e.get("k");
+  auto info = e.info();
+  CHECK(info.find("frequency_sketch_memory_bytes:") != std::string::npos);
+  CHECK(info.find("negative_bloom_memory_bytes:") != std::string::npos);
 }

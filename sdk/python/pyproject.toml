@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pomai-cache"
+version = "0.1.0"
+description = "Python SDK for Pomai Cache — the AI-first cache"
+readme = "README.md"
+requires-python = ">=3.9"
+license = {text = "MIT"}
+authors = [{name = "Pomai Cache Team"}]
+dependencies = []
+
+[project.optional-dependencies]
+numpy = ["numpy>=1.24"]
+torch = ["torch>=2.0"]
+otel = ["opentelemetry-api>=1.20"]
+all = ["numpy>=1.24", "opentelemetry-api>=1.20"]
+
+[tool.setuptools.packages.find]
+include = ["pomai_cache*"]

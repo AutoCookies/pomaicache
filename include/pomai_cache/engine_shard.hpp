@@ -1,5 +1,6 @@
 #pragma once
 
+#include "pomai_cache/ai_cache.hpp"
 #include "pomai_cache/engine.hpp"
 #include "pomai_cache/journal.hpp"
 #include <memory>
@@ -33,6 +34,7 @@ public:
   std::uint32_t id() const { return id_; }
   Engine& engine() { return engine_; }
   Journal& journal() { return journal_; }
+  AiArtifactCache& ai_cache() { return ai_cache_; }
 
   static void InitThreadLocal(std::uint32_t id, EngineConfig cfg, std::unique_ptr<IEvictionPolicy> policy) {
     tlocal_shard_ = new EngineShard(id, std::move(cfg), std::move(policy));
@@ -48,6 +50,7 @@ public:
 private:
   std::uint32_t id_;
   Engine engine_;
+  AiArtifactCache ai_cache_{engine_};
   Journal journal_;
 
   static inline thread_local EngineShard* tlocal_shard_{nullptr};

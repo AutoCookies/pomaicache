@@ -1,5 +1,7 @@
 #pragma once
 
+#include "pomai_cache/bloom_filter.hpp"
+#include "pomai_cache/count_min_sketch.hpp"
 #include "pomai_cache/policy.hpp"
 #include "pomai_cache/ssd_store.hpp"
 #include "pomai_cache/pomai_table.hpp"
@@ -106,6 +108,9 @@ private:
   std::size_t bucket_used_{0};
   std::size_t expiration_backlog_{0};
   std::uint64_t seq_{0};
+
+  CountMinSketch frequency_sketch_{0.001, 0.01};
+  BloomFilter negative_bloom_{65536, 0.01};
 
   SsdStore ssd_;
 };

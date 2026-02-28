@@ -83,8 +83,8 @@ public:
     refresh_window();
     if (admissions_this_window_ >= params_.max_admissions_per_second)
       return false;
-    const double b =
-        benefit(candidate.key, *candidate.entry, candidate.miss_cost);
+    const double b = benefit(candidate.key, *candidate.entry,
+                             candidate.miss_cost, candidate.estimated_frequency);
     if (b <= params_.admit_threshold)
       return false;
     ++admissions_this_window_;
@@ -137,12 +137,16 @@ public:
   const PolicyParams &params() const override { return params_; }
 
 private:
-  double benefit(const std::string &, const Entry &e, double miss_cost) const {
+  double benefit(const std::string &, const Entry &e, double miss_cost,
+                 std::uint16_t cms_freq = 0) const {
     const auto now = Clock::now();
     const double age_s = std::max(
         1.0, std::chrono::duration<double>(now - e.last_access).count());
-    const double p_reuse =
-        std::min(1.0, (static_cast<double>(e.hit_count) + 1.0) / (age_s + 1.0));
+    const double freq_signal =
+        cms_freq > 0 ? static_cast<double>(cms_freq) : 0.0;
+    const double p_reuse = std::min(
+        1.0,
+        (static_cast<double>(e.hit_count) + freq_signal + 1.0) / (age_s + 1.0));
     const double mem_cost = static_cast<double>(e.size_bytes) / 1024.0 +
                             static_cast<double>(e.size_bytes % 64) * 0.01;
     const double risk =
