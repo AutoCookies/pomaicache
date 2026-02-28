@@ -2,6 +2,7 @@
 
 #include "pomai_cache/policy.hpp"
 #include "pomai_cache/ssd_store.hpp"
+#include "pomai_cache/pomai_table.hpp"
 
 #include <cstdint>
 #include <deque>
@@ -10,7 +11,6 @@
 #include <optional>
 #include <queue>
 #include <string>
-#include <unordered_map>
 #include <vector>
 
 namespace pomai_cache {
@@ -91,7 +91,7 @@ private:
 
   EngineConfig cfg_;
   std::unique_ptr<IEvictionPolicy> policy_;
-  std::unordered_map<std::string, Entry> entries_;
+  PomaiTable entries_;
   std::unordered_map<std::string, std::uint64_t> expiry_generation_;
   std::priority_queue<ExpiryNode, std::vector<ExpiryNode>,
                       std::greater<ExpiryNode>>

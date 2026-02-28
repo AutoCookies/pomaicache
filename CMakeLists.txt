@@ -19,7 +19,7 @@ add_library(pomai_cache_core
 
 if(NOT WIN32)
   add_executable(pomai_cache_server src/server/server_main.cpp)
-  target_link_libraries(pomai_cache_server PRIVATE pomai_cache_core)
+  target_link_libraries(pomai_cache_server PRIVATE pomai_cache_core uring)
 
   add_executable(pomai_cache_cli apps/cli/main.cpp)
 
