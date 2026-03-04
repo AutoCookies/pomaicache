@@ -7,11 +7,14 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 include_directories(include third_party)
 
+set(PA_OVERRIDE ON)
+add_subdirectory(third_party/palloc)
+
 add_library(pomai_cache_core
   src/engine/engine.cpp
   src/engine/ssd_store.cpp
   src/policy/policies.cpp
-  src/server/resp.cpp
+  src/server/http.cpp
   src/server/ai_cache.cpp
   src/metrics/info_metrics.cpp
   src/util/time.cpp
@@ -21,6 +24,8 @@ add_library(pomai_cache_core
   src/ds/dep_graph.cpp
   src/ds/compression.cpp
 )
+
+target_link_libraries(pomai_cache_core PUBLIC palloc)
 
 if(NOT WIN32)
   add_executable(pomai_cache_server src/server/server_main.cpp)
@@ -48,14 +53,14 @@ if(BUILD_TESTING)
   add_executable(test_engine tests/test_engine.cpp)
   target_link_libraries(test_engine PRIVATE pomai_cache_core mini_catch_main)
 
-  add_executable(test_resp tests/test_resp.cpp)
-  target_link_libraries(test_resp PRIVATE pomai_cache_core mini_catch_main)
+  add_executable(test_http tests/test_http.cpp)
+  target_link_libraries(test_http PRIVATE pomai_cache_core mini_catch_main)
 
   add_executable(test_ai_cache tests/test_ai_cache.cpp)
   target_link_libraries(test_ai_cache PRIVATE pomai_cache_core mini_catch_main)
 
   add_test(NAME test_engine COMMAND test_engine)
-  add_test(NAME test_resp COMMAND test_resp)
+  add_test(NAME test_http COMMAND test_http)
   add_test(NAME test_ai_cache COMMAND test_ai_cache)
 
   if(NOT WIN32)

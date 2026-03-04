@@ -1,5 +1,7 @@
 # Pomai Cache v1
 
+<img src="./assets/logo.png"/>
+
 Redis-compatible (subset) local cache core with RAM+SSD tiering, bounded TTL cleanup, crash-safe append-only SSD segments, selectable eviction policy (`lru`, `lfu`, `pomai_cost`), and an AI artifact cache layer for embeddings/prompts/RAG/rerank/response reuse.
 
 ## Repo structure

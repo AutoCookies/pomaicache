@@ -1,5 +1,3 @@
-#include "pomai_cache/resp.hpp"
-
 #include <algorithm>
 #include <arpa/inet.h>
 #include <atomic>
@@ -47,44 +45,40 @@ struct SharedStats {
 };
 
 std::string make_cmd(const std::vector<std::string> &args) {
-  std::string out = "*" + std::to_string(args.size()) + "\r\n";
-  for (const auto &a : args) {
-    out += "$" + std::to_string(a.size()) + "\r\n" + a + "\r\n";
+  if (args.empty()) return "";
+  std::string cmd = args[0];
+  if (cmd == "GET") {
+    return "GET /key/" + args[1] + " HTTP/1.1\r\n\r\n";
+  } else if (cmd == "SET") {
+    std::string req = "POST /key/" + args[1];
+    if (args.size() > 3 && args[3] == "PX") {
+      req += "?px=" + args[4];
+    }
+    req += " HTTP/1.1\r\nContent-Length: " + std::to_string(args[2].size()) + "\r\n\r\n" + args[2];
+    return req;
+  } else if (cmd == "INFO") {
+    return "GET /info HTTP/1.1\r\n\r\n";
   }
-  return out;
+  return "";
 }
 
 std::optional<std::string> read_reply(int fd) {
   std::string out;
-  char c = 0;
+  char buf[4096];
   while (true) {
-    ssize_t r = recv(fd, &c, 1, 0);
-    if (r <= 0)
-      return std::nullopt;
-    out.push_back(c);
-    if (out.size() >= 2 && out[out.size() - 2] == '\r' &&
-        out[out.size() - 1] == '\n') {
-      if (out[0] == '+' || out[0] == '-' || out[0] == ':')
-        return out;
-      if (out[0] == '$') {
-        int len = std::stoi(out.substr(1, out.size() - 3));
-        if (len < 0)
+    int r = recv(fd, buf, 4096, 0);
+    if (r <= 0) return std::nullopt;
+    out.append(buf, r);
+    if (out.find("\r\n\r\n") != std::string::npos) {
+      auto pos = out.find("Content-Length: ");
+      if (pos != std::string::npos) {
+        auto end = out.find("\r\n", pos);
+        int len = std::stoi(out.substr(pos + 16, end - pos - 16));
+        auto header_end = out.find("\r\n\r\n") + 4;
+        if (out.size() >= header_end + len) {
           return out;
-        std::string payload(len + 2, '\0');
-        ssize_t got = recv(fd, payload.data(), payload.size(), MSG_WAITALL);
-        if (got <= 0)
-          return std::nullopt;
-        out += payload;
-        return out;
-      }
-      if (out[0] == '*') {
-        int n = std::stoi(out.substr(1, out.size() - 3));
-        for (int i = 0; i < n; ++i) {
-          auto child = read_reply(fd);
-          if (!child)
-            return std::nullopt;
-          out += *child;
         }
+      } else {
         return out;
       }
     }
@@ -249,7 +243,7 @@ int main(int argc, char **argv) {
             ++shared.ops;
             if (expect_get[i]) {
               ++shared.get_ops;
-              if (rep->rfind("$-1", 0) != 0)
+              if (rep->find("200 OK") != std::string::npos)
                 ++shared.get_hits;
             } else {
               ++shared.set_ops;
@@ -272,13 +266,18 @@ int main(int argc, char **argv) {
     auto cmd = make_cmd({"INFO"});
     send(infofd, cmd.data(), cmd.size(), 0);
     auto rep = read_reply(infofd);
-    if (rep && rep->size() > 0 && (*rep)[0] == '$') {
-      auto crlf = rep->find("\r\n");
-      int len = std::stoi(rep->substr(1, crlf - 1));
-      std::string body = rep->substr(crlf + 2, len);
-      parse_info(body, mem, evictions, admissions, ram_hits, ssd_hits,
-                 ssd_read_mb, ssd_write_mb, ssd_bytes, fragmentation,
-                 index_rebuild_ms);
+    if (rep) {
+      auto header_end = rep->find("\r\n\r\n");
+      if (header_end != std::string::npos) {
+        std::string body = rep->substr(header_end + 4);
+        parse_info(body, mem, evictions, admissions, ram_hits, ssd_hits,
+                   ssd_read_mb, ssd_write_mb, ssd_bytes, fragmentation,
+                   index_rebuild_ms);
+      } else {
+          parse_info(*rep, mem, evictions, admissions, ram_hits, ssd_hits,
+                     ssd_read_mb, ssd_write_mb, ssd_bytes, fragmentation,
+                     index_rebuild_ms);
+      }
     }
     close(infofd);
   }
