@@ -39,21 +39,12 @@ Owner defaults:
 
 Per-item TTL from metadata overrides defaults.
 
-### Prompt prefix cache TTLs
-
-Prompt prefixes cached via the HTTP prompt cache API share the `owner=prompt`
-class but typically use a much shorter horizon (5–10 minutes) to reflect the
-ephemeral nature of interactive LLM sessions. The default can be overridden
-with the `--default-prompt-ttl-sec` server flag or per-prefix `ttl_ms`
-parameter. Cached prefixes are treated as significantly cheaper than fresh
-tokens in AI stats, simulating ~10x lower cost for reused tokens.
-
 ## Tiering/persistence semantics
 
 SSD remains a warm cache tier:
 
 - async write-behind behavior in SSD store
-- fsync default for server is `never`
+- fsync default is `never`
 - queue pressure may drop writes
 - restart rebuild is best effort; corrupted tails are skipped
 

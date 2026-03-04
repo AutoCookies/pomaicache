@@ -8,6 +8,7 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 include_directories(include third_party)
 
 set(PA_OVERRIDE ON)
+set(PA_BUILD_TESTS OFF CACHE BOOL "Disable palloc tests for embedded pomai_cache" FORCE)
 add_subdirectory(third_party/palloc)
 
 add_library(pomaicache SHARED
@@ -36,14 +37,10 @@ if(BUILD_TESTING)
   add_executable(test_engine tests/test_engine.cpp)
   target_link_libraries(test_engine PRIVATE pomaicache mini_catch_main)
 
-  add_executable(test_http tests/test_http.cpp)
-  target_link_libraries(test_http PRIVATE pomaicache mini_catch_main)
-
   add_executable(test_ai_cache tests/test_ai_cache.cpp)
   target_link_libraries(test_ai_cache PRIVATE pomaicache mini_catch_main)
 
   add_test(NAME test_engine COMMAND test_engine)
-  add_test(NAME test_http COMMAND test_http)
   add_test(NAME test_ai_cache COMMAND test_ai_cache)
 
   if(NOT WIN32)
@@ -56,6 +53,18 @@ endif()
 if(NOT WIN32)
   add_executable(pomai_cache_crash_harness tests/crash_harness.cpp)
   target_link_libraries(pomai_cache_crash_harness PRIVATE pomaicache)
+
+  add_executable(pomai_cache_bench bench/pomai_cache_bench.cpp)
+  target_link_libraries(pomai_cache_bench PRIVATE pomaicache)
+
+  add_executable(ai_artifact_bench bench/ai_artifact_bench.cpp)
+  target_link_libraries(ai_artifact_bench PRIVATE pomaicache)
+
+  add_executable(vector_cache_bench bench/vector_cache_bench.cpp)
+  target_link_libraries(vector_cache_bench PRIVATE pomaicache)
+
+  add_executable(prompt_cache_bench bench/prompt_cache_bench.cpp)
+  target_link_libraries(prompt_cache_bench PRIVATE pomaicache)
 endif()
 
 option(BUILD_PYTHON_BINDINGS "Build Python bindings" ON)

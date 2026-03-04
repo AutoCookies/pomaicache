@@ -5,7 +5,6 @@ BUILD_DIR ?= build
 dev:
 	cmake -S . -B $(BUILD_DIR) -DCMAKE_BUILD_TYPE=Debug
 	cmake --build $(BUILD_DIR) -j
-	./$(BUILD_DIR)/pomai_cache_server --port 6379 --policy pomai_cost --params config/policy_params.json
 
 release:
 	cmake -S . -B $(BUILD_DIR)-release -DCMAKE_BUILD_TYPE=Release
@@ -25,11 +24,9 @@ bench:
 	cmake -S . -B $(BUILD_DIR)-release -DCMAKE_BUILD_TYPE=Release
 	cmake --build $(BUILD_DIR)-release -j
 	./$(BUILD_DIR)-release/pomai_cache_bench
-
-netbench:
-	cmake -S . -B $(BUILD_DIR)-release -DCMAKE_BUILD_TYPE=Release
-	cmake --build $(BUILD_DIR)-release -j
-	./$(BUILD_DIR)-release/pomai_cache_netbench
+	./$(BUILD_DIR)-release/ai_artifact_bench
+	./$(BUILD_DIR)-release/vector_cache_bench
+	./$(BUILD_DIR)-release/prompt_cache_bench
 
 bench-all:
 	./scripts/bench_run.sh

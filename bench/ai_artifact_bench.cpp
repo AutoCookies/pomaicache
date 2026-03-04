@@ -62,6 +62,8 @@ int main(int argc, char **argv) {
   if (argc > 1)
     out = argv[1];
 
+  std::cout << "Embedded AI artifact cache benchmark (in-process, no network)\n";
+
   Engine e({64 * 1024 * 1024, 256, 4 * 1024 * 1024},
            make_policy_by_name("pomai_cost"));
   AiArtifactCache ai(e);
@@ -207,6 +209,19 @@ int main(int argc, char **argv) {
                      std::chrono::steady_clock::now() - r0)
                      .count();
 
+  // Human-readable summary.
+  std::cout << std::fixed << std::setprecision(2);
+  std::cout << "\nworkload                ops/s      p50_us      p99_us    hit_rate\n";
+  std::cout << "------------------------------------------------------------------\n";
+  for (const auto &r : results) {
+    std::cout << std::left << std::setw(22) << r.name << std::right
+              << std::setw(10) << r.ops_s
+              << std::setw(12) << r.p50
+              << std::setw(12) << r.p99
+              << std::setw(11) << r.hit_rate << "\n";
+  }
+  std::cout << "\nEngine constructor time (ms): " << warm_ms << "\n";
+
   std::ofstream os(out);
   os << "{\n  \"workloads\": [\n";
   for (std::size_t i = 0; i < results.size(); ++i) {
@@ -221,7 +236,7 @@ int main(int argc, char **argv) {
   }
   os << "  ],\n";
   os << "  \"ssd_mb_s\": 0.0,\n";
-  os << "  \"warm_restart_ms\": " << warm_ms << ",\n";
+  os << "  \"engine_ctor_ms\": " << warm_ms << ",\n";
   os << "  \"dedup_ratio\": 0.0\n";
   os << "}\n";
 

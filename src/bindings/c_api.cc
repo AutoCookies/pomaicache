@@ -3,6 +3,7 @@
 
 #include <new>
 #include <vector>
+#include <cstring>
 
 struct pomai_t {
   pomaicache::PomaiCache impl;

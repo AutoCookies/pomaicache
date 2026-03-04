@@ -4,12 +4,15 @@
 #include "pomai_cache/engine.hpp"
 #include "pomai_cache/prompt_cache.hpp"
 
+#include <cstring>
+
 namespace pomaicache {
 
 class PomaiCacheImpl {
 public:
   explicit PomaiCacheImpl(const Config &cfg)
-      : engine_cfg_(), policy_(make_policy_by_name("pomai_cost")),
+      : engine_cfg_(),
+        policy_(pomai_cache::make_policy_by_name("pomai_cost")),
         engine_(engine_cfg_, std::move(policy_)),
         ai_cache_(engine_),
         prompt_cfg_(),
@@ -74,12 +77,12 @@ public:
   }
 
 private:
-  EngineConfig engine_cfg_;
-  std::unique_ptr<IEvictionPolicy> policy_;
-  Engine engine_;
-  AiArtifactCache ai_cache_;
-  PromptCacheConfig prompt_cfg_;
-  PromptCacheManager prompt_cache_;
+  pomai_cache::EngineConfig engine_cfg_;
+  std::unique_ptr<pomai_cache::IEvictionPolicy> policy_;
+  pomai_cache::Engine engine_;
+  pomai_cache::AiArtifactCache ai_cache_;
+  pomai_cache::PromptCacheConfig prompt_cfg_;
+  pomai_cache::PromptCacheManager prompt_cache_;
 };
 
 PomaiCache::PomaiCache(const Config &cfg)
