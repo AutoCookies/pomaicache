@@ -2,87 +2,83 @@
 
 <img src="./assets/logo.png"/>
 
-Redis-compatible (subset) local cache core with RAM+SSD tiering, bounded TTL cleanup, crash-safe append-only SSD segments, selectable eviction policy (`lru`, `lfu`, `pomai_cost`), and an AI artifact cache layer for embeddings/prompts/RAG/rerank/response reuse.
+Embedded local cache core with RAM+SSD tiering, bounded TTL cleanup, crash-safe append-only SSD segments, selectable eviction policy (`lru`, `lfu`, `pomai_cost`), and an AI artifact cache layer for embeddings/prompts/RAG/rerank/response reuse.
 
 ## Repo structure
 
-- `src/server/` RESP parser + connection loop
 - `src/engine/` KV store, TTL heap, memory limit enforcement
 - `src/policy/` LRU, LFU, PomaiCostPolicy
 - `src/metrics/` INFO metrics module
-- `apps/cli/` simple CLI helper
-- `bench/` benchmark tool
+- `bindings/` C and Python embedded bindings
+- `bench/` embedded benchmarks
 - `tests/` correctness tests
 - `tuner/` offline python tuner
-- `docker/` container artifacts
 
-## Quickstart
+## Quickstart (embedded library)
 
-### Build + run locally
+### Build library
 
 ```bash
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug
 cmake --build build -j
-./build/pomai_cache_server --port 6379 --policy pomai_cost --params config/policy_params.json --ssd-enabled --data-dir ./data --ssd-value-min-bytes 2048 --fsync everysec
 ```
 
-or:
+This produces the shared library `libpomaicache` and optional Python module.
 
-```bash
-make dev
+### C++ usage
+
+```cpp
+#include <pomaicache.h>
+
+int main() {
+  pomaicache::Config cfg;
+  cfg.memory_limit_bytes = 128 * 1024 * 1024;
+  cfg.data_dir = "./data";
+
+  pomaicache::PomaiCache cache(cfg);
+  const std::string key = "demo";
+  const std::string value = "hello";
+
+  cache.Set(key, std::as_bytes(std::span(value.data(), value.size())),
+            pomaicache::Ttl{300000});
+
+  auto got = cache.Get(key);
+  if (got) {
+    // use *got
+  }
+}
 ```
 
-### Run with Docker
+### C API usage
 
-```bash
-make docker-build
-make docker-run
+```c
+#include <pomaicache_c.h>
+
+int main() {
+  pomai_config_t cfg = { .memory_limit_bytes = 128 * 1024 * 1024,
+                         .data_dir = "./data" };
+  pomai_t* db = pomai_create(&cfg);
+  const char* key = "demo";
+  const char* val = "hello";
+  pomai_set(db, key, strlen(key), val, strlen(val), 300000);
+  void* out = NULL;
+  size_t out_len = 0;
+  if (pomai_get(db, key, strlen(key), &out, &out_len) == 0) {
+    // use out / out_len
+    pomai_free(out);
+  }
+  pomai_destroy(db);
+}
 ```
 
-### Example redis-cli session
+### Python usage
 
-```bash
-redis-cli -p 6379 SET demo hello EX 30
-redis-cli -p 6379 GET demo
-redis-cli -p 6379 INFO
-redis-cli -p 6379 CONFIG GET POLICY
-redis-cli -p 6379 CONFIG SET POLICY lru
-redis-cli -p 6379 CONFIG SET PARAMS /app/config/policy_params.json
+```python
+import pomaicache
+
+cache = pomaicache.Cache(data_dir="./data", memory_limit_bytes=128*1024*1024)
+# prompt_put / prompt_get APIs are available for prompt prefix caching
 ```
-
-
-### AI artifact quickstart (redis-cli)
-
-```bash
-redis-cli -p 6379 AI.PUT embedding emb:modelA:hashA:768:float16 '{"artifact_type":"embedding","owner":"vector","schema_version":"v1","model_id":"modelA","snapshot_epoch":"ix1"}' "abc"
-redis-cli -p 6379 AI.GET emb:modelA:hashA:768:float16
-redis-cli -p 6379 AI.STATS
-redis-cli -p 6379 AI.INVALIDATE EPOCH ix1
-```
-
-## Make targets
-
-- `make dev` debug build + run server
-- `make release` release build
-- `make test` tests
-- `make bench` benchmarks
-- `make crash-suite` short crash/recovery harness
-- `make fmt` clang-format
-- `make docker-build`
-- `make docker-run`
-
-## Supported commands
-
-- `GET`
-- `SET key value [EX seconds] [OWNER owner_name]`
-- `DEL key [key ...]`
-- `EXPIRE key seconds`
-- `TTL key`
-- `MGET key [key ...]`
-- `INFO`
-- `CONFIG GET POLICY`
-- `CONFIG SET POLICY <lru|lfu|pomai_cost>`
-- `CONFIG SET PARAMS <path>`
 
 ## Policy tuning
 
@@ -92,35 +88,16 @@ Generate params from offline stats snapshot:
 python3 tuner/tune_policy.py --input stats_snapshot.json --output config/policy_params.json
 ```
 
-The server loads params on startup and can reload at runtime via:
-
-```bash
-redis-cli -p 6379 CONFIG SET PARAMS /app/config/policy_params.json
-```
-
-Invalid/missing param files are handled safely with existing/default values.
+Your application is responsible for loading updated params and calling the appropriate reload functions in the embedded API.
 
 ## Benchmarks
 
-Run:
-
-```bash
-make bench
-```
-
-Bench reports per workload and policy:
-
-- ops/s
-- p50/p95/p99 latency
-- hit rate
-- memory used
+Benchmarks under `bench/` exercise the embedded library in-process (no network).
 
 ## Security/stability constraints
 
 - max key length enforced
 - max value size enforced
-- max concurrent connections enforced
-- slow-client protection via bounded output buffer
 - bounded per-tick TTL cleanup
 
 ## SSD tier defaults (laptop-safe)

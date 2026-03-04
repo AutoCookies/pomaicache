@@ -311,11 +311,10 @@ int main(int argc, char **argv) {
   std::cout << std::fixed << std::setprecision(2);
 
   // ========================================
-  // SECTION 1: Raw Vector Index Performance
+  // SECTION 1: Raw Vector Index Performance (Embedded)
   // ========================================
-  print_header("POMAI CACHE VECTOR BENCHMARK SUITE");
-  std::cout << "  Comparing against: Redis+RediSearch, Milvus, Qdrant, Weaviate, Pinecone\n";
-  std::cout << "  All measurements: single-thread, in-process (no network overhead)\n";
+  print_header("POMAI CACHE EMBEDDED VECTOR BENCHMARK");
+  std::cout << "  All measurements: single-thread, in-process (no network, no RPC)\n";
   print_separator();
 
   std::vector<BenchConfig> configs = {
@@ -349,7 +348,7 @@ int main(int argc, char **argv) {
               << r.bytes_per_vector << " bytes/vec)\n";
   }
 
-  // Summary table
+  // Summary table (with reference-only estimates for networked systems)
   print_header("INSERT THROUGHPUT (vectors/sec)");
   std::cout << std::left << std::setw(20) << "Config" << std::right
             << std::setw(14) << "Pomai Cache" << std::setw(14) << "Redis*"
@@ -366,8 +365,9 @@ int main(int argc, char **argv) {
               << redis_est << std::setw(14) << milvus_est << std::setw(14)
               << qdrant_est << std::setw(14) << weaviate_est << "\n";
   }
-  std::cout << "\n  * Estimated from published benchmarks (network + indexing overhead).\n"
-            << "    Pomai Cache: in-process flat index, zero network, zero serialization.\n";
+  std::cout << "\n  * Non-Pomai numbers are rough reference estimates for network-based systems\n"
+            << "    (including network and indexing overhead). Pomai Cache runs embedded,\n"
+            << "    co-located with the application (zero network, zero serialization).\n";
 
   print_header("SEARCH LATENCY p50 (microseconds)");
   std::cout << std::left << std::setw(20) << "Config" << std::right
@@ -386,7 +386,7 @@ int main(int argc, char **argv) {
   }
   std::cout << "\n  * Network-based systems add 200-5000us of network + serialization overhead.\n"
             << "    Pinecone: managed cloud service, includes network RTT.\n"
-            << "    Pomai Cache: co-located with application, sub-millisecond.\n";
+            << "    Pomai Cache: embedded in your process, typically sub-millisecond.\n";
 
   // Memory efficiency
   print_header("MEMORY EFFICIENCY");

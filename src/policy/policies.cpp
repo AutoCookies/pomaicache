@@ -144,9 +144,12 @@ private:
         1.0, std::chrono::duration<double>(now - e.last_access).count());
     const double freq_signal =
         cms_freq > 0 ? static_cast<double>(cms_freq) : 0.0;
-    const double p_reuse = std::min(
+    double p_reuse = std::min(
         1.0,
         (static_cast<double>(e.hit_count) + freq_signal + 1.0) / (age_s + 1.0));
+    if (e.owner == "prompt" && params_.prompt_reuse_weight > 0.0) {
+      p_reuse *= (1.0 + params_.prompt_reuse_weight);
+    }
     const double mem_cost = static_cast<double>(e.size_bytes) / 1024.0 +
                             static_cast<double>(e.size_bytes % 64) * 0.01;
     const double risk =

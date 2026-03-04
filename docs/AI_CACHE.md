@@ -44,7 +44,7 @@ Per-item TTL from metadata overrides defaults.
 SSD remains a warm cache tier:
 
 - async write-behind behavior in SSD store
-- fsync default for server is `never`
+- fsync default is `never`
 - queue pressure may drop writes
 - restart rebuild is best effort; corrupted tails are skipped
 
