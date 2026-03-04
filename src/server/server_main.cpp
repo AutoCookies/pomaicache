@@ -43,12 +43,14 @@ struct ClientState {
 
 class UringWorker {
 public:
-  UringWorker(int port, const pomai_cache::EngineConfig& cfg, int id) 
-    : port_(port), cfg_(cfg), id_(id) {}
+  UringWorker(int port, const pomai_cache::EngineConfig& cfg,
+              const pomai_cache::PromptCacheConfig& prompt_cfg, int id)
+      : port_(port), cfg_(cfg), prompt_cfg_(prompt_cfg), id_(id) {}
 
   void run() {
     auto policy = pomai_cache::make_policy_by_name("pomai_cost");
-    pomai_cache::EngineShard::InitThreadLocal(id_, cfg_, std::move(policy));
+    pomai_cache::EngineShard::InitThreadLocal(id_, cfg_, std::move(policy),
+                                              prompt_cfg_);
     auto* shard = pomai_cache::EngineShard::tlocal();
     pomai_cache::ShardSet::instance().add_shard(shard);
 
@@ -77,6 +79,7 @@ public:
 
     while (running) {
       shard->engine().tick();
+      shard->prompt_cache().tick();
       
       struct io_uring_cqe *cqe;
       struct __kernel_timespec ts{0, 10000000}; // 10ms
@@ -278,7 +281,35 @@ private:
       if (op == "stats" && req.method == "GET") {
         auto shards = pomai_cache::ShardSet::instance().all_shards();
         std::string combined;
-        for (auto* s : shards) combined += s->ai_cache().stats();
+        for (auto* s : shards)
+          combined += s->ai_cache().stats();
+
+        // Aggregate prompt cache stats across shards and append to AI.STATS.
+        std::uint64_t hits = 0, misses = 0, total_q = 0, bytes = 0, entries = 0;
+        double sum_savings = 0.0;
+        for (auto* s : shards) {
+          auto ps = s->prompt_cache().stats();
+          hits += ps.hits;
+          misses += ps.misses;
+          total_q += ps.total_queries;
+          bytes += ps.cached_prefix_bytes;
+          entries += ps.entry_count;
+          sum_savings += ps.average_savings_ratio *
+                         static_cast<double>(ps.total_queries);
+        }
+        double avg_savings = 0.0;
+        if (total_q > 0)
+          avg_savings = sum_savings / static_cast<double>(total_q);
+
+        std::ostringstream extra;
+        extra << "prompt_cache_hits:" << hits << "\n";
+        extra << "prompt_cache_misses:" << misses << "\n";
+        extra << "prompt_cache_total_queries:" << total_q << "\n";
+        extra << "prompt_cache_cached_prefix_bytes:" << bytes << "\n";
+        extra << "prompt_cache_average_savings_ratio:" << avg_savings << "\n";
+        extra << "prompt_cache_entries:" << entries << "\n";
+
+        combined += extra.str();
         st.out += pomai_cache::http_response(200, "OK", combined);
         return;
       }
@@ -389,6 +420,126 @@ private:
           return;
         }
       }
+
+      if (op == "prompt_cache" && parts.size() >= 3) {
+        std::string subcmd = parts[2];
+
+        if (subcmd == "put" && req.method == "POST" && parts.size() >= 5) {
+          std::string tokenizer_id = parts[3];
+          std::string prefix_hash = parts[4];
+          auto* shard =
+              pomai_cache::ShardSet::instance().get_shard(prefix_hash);
+          if (!shard) {
+            st.out += pomai_cache::http_response(
+                503, "Service Unavailable", "no shard");
+            return;
+          }
+
+          std::uint64_t cached_tokens = 0;
+          auto it_ct = req.query_params.find("cached_tokens");
+          if (it_ct != req.query_params.end())
+            cached_tokens =
+                static_cast<std::uint64_t>(std::stoull(it_ct->second));
+
+          std::optional<std::uint64_t> ttl_ms;
+          auto it_ttl = req.query_params.find("ttl_ms");
+          if (it_ttl != req.query_params.end())
+            ttl_ms = static_cast<std::uint64_t>(std::stoull(it_ttl->second));
+
+          std::vector<std::uint8_t> payload(req.body.begin(), req.body.end());
+          std::string err;
+          if (!shard->prompt_cache().put_prefix(
+                  tokenizer_id, prefix_hash, payload, cached_tokens, ttl_ms,
+                  &err)) {
+            st.out += pomai_cache::http_response(400, "Bad Request", err);
+          } else {
+            st.out += pomai_cache::http_response(200, "OK", "OK");
+          }
+          return;
+        }
+
+        if (subcmd == "get" && req.method == "POST" && parts.size() >= 5) {
+          std::string tokenizer_id = parts[3];
+          std::string full_hash = parts[4];
+          auto* shard =
+              pomai_cache::ShardSet::instance().get_shard(full_hash);
+          if (!shard) {
+            st.out += pomai_cache::http_response(
+                503, "Service Unavailable", "no shard");
+            return;
+          }
+
+          std::optional<std::size_t> min_tokens;
+          auto it_min = req.query_params.find("prefix_min_tokens");
+          if (it_min != req.query_params.end())
+            min_tokens =
+                static_cast<std::size_t>(std::stoull(it_min->second));
+
+          std::vector<std::uint8_t> query_bytes(req.body.begin(),
+                                                req.body.end());
+          auto reuse = shard->prompt_cache().reuse_for_query(
+              tokenizer_id, full_hash, query_bytes, min_tokens);
+
+          std::ostringstream os;
+          os << "hit:" << (reuse.hit ? 1 : 0) << "\n";
+          os << "prompt_prefix_hash:" << reuse.prompt_prefix_hash << "\n";
+          os << "cached_tokens:" << reuse.cached_tokens << "\n";
+          os << "suffix_tokens:" << reuse.suffix_tokens << "\n";
+          os << "savings_ratio:" << reuse.savings_ratio << "\n";
+
+          st.out += pomai_cache::http_response(200, "OK", os.str());
+          return;
+        }
+
+        if (subcmd == "invalidate" && req.method == "POST" &&
+            parts.size() >= 5) {
+          std::string tokenizer_id = parts[3];
+          std::string prefix_hash = parts[4];
+          auto* shard =
+              pomai_cache::ShardSet::instance().get_shard(prefix_hash);
+          if (!shard) {
+            st.out += pomai_cache::http_response(
+                503, "Service Unavailable", "no shard");
+            return;
+          }
+          auto removed =
+              shard->prompt_cache().invalidate_prefix(tokenizer_id, prefix_hash);
+          st.out += pomai_cache::http_response(
+              200, "OK", std::to_string(removed));
+          return;
+        }
+
+        if (subcmd == "stats" && req.method == "GET") {
+          auto shards = pomai_cache::ShardSet::instance().all_shards();
+          std::uint64_t hits = 0, misses = 0, total_q = 0, bytes = 0,
+                        entries = 0;
+          double sum_savings = 0.0;
+          for (auto* s : shards) {
+            auto ps = s->prompt_cache().stats();
+            hits += ps.hits;
+            misses += ps.misses;
+            total_q += ps.total_queries;
+            bytes += ps.cached_prefix_bytes;
+            entries += ps.entry_count;
+            sum_savings += ps.average_savings_ratio *
+                           static_cast<double>(ps.total_queries);
+          }
+          double avg_savings = 0.0;
+          if (total_q > 0)
+            avg_savings = sum_savings / static_cast<double>(total_q);
+
+          std::ostringstream os;
+          os << "prompt_cache_hits:" << hits << "\n";
+          os << "prompt_cache_misses:" << misses << "\n";
+          os << "prompt_cache_total_queries:" << total_q << "\n";
+          os << "prompt_cache_cached_prefix_bytes:" << bytes << "\n";
+          os << "prompt_cache_average_savings_ratio:" << avg_savings << "\n";
+          os << "prompt_cache_entries:" << entries << "\n";
+
+          st.out += pomai_cache::http_response(200, "OK", os.str());
+          return;
+        }
+      }
       
       if (op == "put" && req.method == "POST" && parts.size() >= 4) {
         std::string type = parts[2];
@@ -433,6 +584,7 @@ private:
 
   int port_;
   pomai_cache::EngineConfig cfg_;
+  pomai_cache::PromptCacheConfig prompt_cfg_;
   int id_;
 };
 
@@ -442,23 +594,40 @@ int main(int argc, char **argv) {
   int port = 6379;
   std::size_t memory_limit = 128 * 1024 * 1024;
   std::string data_dir = "./data";
+  bool prompt_cache_enabled = true;
+  std::uint64_t default_prompt_ttl_sec = 300;
+  std::size_t prefix_min_length = 50;
 
   for (int i = 1; i < argc; ++i) {
     std::string a = argv[i];
     if (a == "--port" && i + 1 < argc) port = std::stoi(argv[++i]);
-    else if (a == "--memory" && i + 1 < argc) memory_limit = std::stoull(argv[++i]);
+    else if (a == "--memory" && i + 1 < argc) {
+      memory_limit = std::stoull(argv[++i]);
+    } else if (a == "--prompt-cache-enabled" && i + 1 < argc) {
+      std::string v = argv[++i];
+      prompt_cache_enabled = (v == "1" || v == "true" || v == "yes");
+    } else if (a == "--default-prompt-ttl-sec" && i + 1 < argc) {
+      default_prompt_ttl_sec = static_cast<std::uint64_t>(std::stoull(argv[++i]));
+    } else if (a == "--prefix-min-length" && i + 1 < argc) {
+      prefix_min_length = static_cast<std::size_t>(std::stoull(argv[++i]));
+    }
   }
 
   pomai_cache::EngineConfig cfg;
   cfg.memory_limit_bytes = memory_limit; // No division because it is single-threaded
   cfg.data_dir = data_dir;
 
+  pomai_cache::PromptCacheConfig prompt_cfg;
+  prompt_cfg.enabled = prompt_cache_enabled;
+  prompt_cfg.default_ttl_ms = default_prompt_ttl_sec * 1000;
+  prompt_cfg.prefix_min_tokens = prefix_min_length;
+
   std::cout << "Starting PomaiCache on single core...\n";
 
   std::signal(SIGINT, on_sigint);
   
   // Single-threaded so just call run() on main thread
-  UringWorker(port, cfg, 0).run();
+  UringWorker(port, cfg, prompt_cfg, 0).run();
 
   return 0;
 }

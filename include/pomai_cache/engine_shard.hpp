@@ -3,6 +3,7 @@
 #include "pomai_cache/ai_cache.hpp"
 #include "pomai_cache/engine.hpp"
 #include "pomai_cache/journal.hpp"
+#include "pomai_cache/prompt_cache.hpp"
 #include <memory>
 #include <vector>
 
@@ -24,8 +25,11 @@ namespace pomai_cache {
 
 class alignas(64) EngineShard {
 public:
-  EngineShard(std::uint32_t id, EngineConfig cfg, std::unique_ptr<IEvictionPolicy> policy)
-      : id_(id), engine_(std::move(cfg), std::move(policy)) {}
+  EngineShard(std::uint32_t id, EngineConfig cfg,
+              std::unique_ptr<IEvictionPolicy> policy,
+              PromptCacheConfig prompt_cfg = {})
+      : id_(id), engine_(std::move(cfg), std::move(policy)),
+        ai_cache_(engine_), prompt_cache_(engine_, ai_cache_, prompt_cfg) {}
 
   // Forbidden copy/assignment to ensure memory stability
   EngineShard(const EngineShard&) = delete;
@@ -35,9 +39,13 @@ public:
   Engine& engine() { return engine_; }
   Journal& journal() { return journal_; }
   AiArtifactCache& ai_cache() { return ai_cache_; }
+  PromptCacheManager& prompt_cache() { return prompt_cache_; }
 
-  static void InitThreadLocal(std::uint32_t id, EngineConfig cfg, std::unique_ptr<IEvictionPolicy> policy) {
-    tlocal_shard_ = new EngineShard(id, std::move(cfg), std::move(policy));
+  static void InitThreadLocal(std::uint32_t id, EngineConfig cfg,
+                              std::unique_ptr<IEvictionPolicy> policy,
+                              PromptCacheConfig prompt_cfg = {}) {
+    tlocal_shard_ =
+        new EngineShard(id, std::move(cfg), std::move(policy), prompt_cfg);
   }
 
   static void DestroyThreadLocal() {
@@ -50,7 +58,8 @@ public:
 private:
   std::uint32_t id_;
   Engine engine_;
-  AiArtifactCache ai_cache_{engine_};
+  AiArtifactCache ai_cache_;
+  PromptCacheManager prompt_cache_;
   Journal journal_;
 
   static inline thread_local EngineShard* tlocal_shard_{nullptr};

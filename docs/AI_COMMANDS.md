@@ -33,3 +33,26 @@ redis-cli -p 6379 AI.TOP HOT 20
 redis-cli -p 6379 AI.TOP COSTLY 20
 redis-cli -p 6379 AI.EXPLAIN emb:modelX:ih:768:float16
 ```
+
+## Prompt prefix cache (HTTP)
+
+The HTTP server exposes a lightweight prompt prefix cache optimized for
+pre-tokenized prompts and K/V-style reuse:
+
+- `POST /ai/prompt_cache/put/<tokenizer_id>/<prompt_prefix_hash>?cached_tokens=N&ttl_ms=M`  
+  Body is the serialized token sequence for the prefix. This stores the prefix
+  as a `prompt` artifact and indexes it for longest-prefix matching.
+- `POST /ai/prompt_cache/get/<tokenizer_id>/<prompt_full_hash>?prefix_min_tokens=K`  
+  Body is the serialized token sequence for the full prompt. The response
+  includes `hit`, `prompt_prefix_hash`, `cached_tokens`, `suffix_tokens`, and
+  `savings_ratio`, indicating how many tokens can be reused from cache.
+- `POST /ai/prompt_cache/invalidate/<tokenizer_id>/<prompt_prefix_hash>`  
+  Invalidates a single cached prefix and its backing artifact.
+- `GET /ai/prompt_cache/stats`  
+  Returns aggregate prompt cache metrics, including `prompt_cache_hits`,
+  `prompt_cache_misses`, `prompt_cache_cached_prefix_bytes`,
+  `prompt_cache_average_savings_ratio`, and `prompt_cache_entries`.
+
+These endpoints are designed to front LLM providers or PomaiDB-backed RAG
+pipelines, allowing stable system prompts and common prefixes to be reused
+instead of recomputed on each request.

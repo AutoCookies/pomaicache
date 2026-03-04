@@ -15,6 +15,7 @@ struct PolicyParams {
   double w_reuse{1.0};
   double w_mem{1.0};
   double w_risk{1.0};
+  double prompt_reuse_weight{0.0};
   double admit_threshold{0.0};
   double evict_pressure{0.8};
   std::uint64_t max_evictions_per_second{10000};

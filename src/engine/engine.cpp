@@ -414,6 +414,8 @@ bool Engine::reload_params(const std::string &path, std::string *err) {
     p.w_mem = clamp_d(d, 0.0, 1000.0);
   if (extract_double(text, "w_risk", d))
     p.w_risk = clamp_d(d, 0.0, 1000.0);
+  if (extract_double(text, "prompt_reuse_weight", d))
+    p.prompt_reuse_weight = clamp_d(d, 0.0, 1000.0);
   if (extract_double(text, "admit_threshold", d))
     p.admit_threshold = clamp_d(d, -1e9, 1e9);
   if (extract_double(text, "evict_pressure", d))
