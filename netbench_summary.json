@@ -1,0 +1,19 @@
+{
+  "workload": "writeheavy",
+  "ops_per_sec": 560.8,
+  "p50_us": 1451.08,
+  "p95_us": 3815.46,
+  "p99_us": 11651.1,
+  "p999_us": 14622.2,
+  "hit_rate": 0.718412,
+  "ram_hits": 0,
+  "ssd_hits": 0,
+  "ssd_bytes": 0,
+  "ssd_read_mb": 0,
+  "ssd_write_mb": 0,
+  "ssd_index_rebuild_ms": 0,
+  "fragmentation_estimate": 0,
+  "memory_used_bytes": 0,
+  "evictions_per_sec": 0,
+  "admissions_rejected_per_sec": 0
+}

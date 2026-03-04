@@ -13,47 +13,33 @@
 #include <thread>
 #include <unistd.h>
 #include <vector>
+#include <sstream>
+#include <cstring>
 
 namespace {
-std::string cmd(const std::vector<std::string> &args) {
-  std::string out = "*" + std::to_string(args.size()) + "\r\n";
-  for (const auto &a : args)
-    out += "$" + std::to_string(a.size()) + "\r\n" + a + "\r\n";
-  return out;
-}
 
 std::optional<std::string> read_reply(int fd) {
   std::string out;
-  char c;
-  while (recv(fd, &c, 1, 0) == 1) {
-    out.push_back(c);
-    if (out.size() >= 2 && out[out.size() - 2] == '\r' &&
-        out[out.size() - 1] == '\n') {
-      if (out[0] == '+' || out[0] == '-' || out[0] == ':')
-        return out;
-      if (out[0] == '$') {
-        int len = std::stoi(out.substr(1, out.size() - 3));
-        if (len < 0)
+  char buf[4096];
+  while (true) {
+    int r = recv(fd, buf, 4096, 0);
+    if (r <= 0) break;
+    out.append(buf, r);
+    if (out.find("\r\n\r\n") != std::string::npos) {
+      auto pos = out.find("Content-Length: ");
+      if (pos != std::string::npos) {
+        auto end = out.find("\r\n", pos);
+        int len = std::stoi(out.substr(pos + 16, end - pos - 16));
+        auto header_end = out.find("\r\n\r\n") + 4;
+        if (out.size() >= header_end + len) {
           return out;
-        std::string payload(len + 2, '\0');
-        if (recv(fd, payload.data(), payload.size(), MSG_WAITALL) <= 0)
-          return std::nullopt;
-        out += payload;
-        return out;
-      }
-      if (out[0] == '*') {
-        int n = std::stoi(out.substr(1, out.size() - 3));
-        for (int i = 0; i < n; ++i) {
-          auto child = read_reply(fd);
-          if (!child)
-            return std::nullopt;
-          out += *child;
         }
+      } else {
         return out;
       }
     }
   }
-  return std::nullopt;
+  return out.empty() ? std::nullopt : std::make_optional(out);
 }
 
 int connect_port(int port) {
@@ -102,32 +88,41 @@ void stop_server(const ServerProc &s) {
 }
 } // namespace
 
-TEST_CASE("integration: RESP core commands and clean shutdown",
+TEST_CASE("integration: HTTP core commands and clean shutdown",
           "[integration]") {
   auto s = spawn_server();
   int fd = connect_port(s.port);
   REQUIRE(fd >= 0);
 
-  auto send_cmd = [&](const std::vector<std::string> &args) {
-    auto req = cmd(args);
-    send(fd, req.data(), req.size(), 0);
-    return read_reply(fd);
-  };
+  auto req1 = "POST /key/a HTTP/1.1\r\nContent-Length: 1\r\n\r\n1";
+  send(fd, req1, strlen(req1), 0);
+  REQUIRE(read_reply(fd).value().find("200 OK") != std::string::npos);
 
-  REQUIRE(send_cmd({"SET", "a", "1"}).value().rfind("+OK", 0) == 0);
-  REQUIRE(send_cmd({"GET", "a"}).value().find("1") != std::string::npos);
-  REQUIRE(send_cmd({"MGET", "a", "b"}).has_value());
-  REQUIRE(send_cmd({"EXPIRE", "a", "1"}).value().rfind(":1", 0) == 0);
-  REQUIRE(send_cmd({"TTL", "a"}).has_value());
-  REQUIRE(send_cmd({"INFO"}).value()[0] == '$');
-  REQUIRE(send_cmd({"CONFIG", "GET", "POLICY"}).value()[0] == '*');
-  REQUIRE(send_cmd({"DEL", "a"}).value().rfind(":1", 0) == 0);
+  auto req2 = "GET /key/a HTTP/1.1\r\n\r\n";
+  send(fd, req2, strlen(req2), 0);
+  REQUIRE(read_reply(fd).value().find("1") != std::string::npos);
 
-  const std::string bad_req = "*1\r\n$4\r\nNOPE\r\n";
+  auto req3 = "POST /key/a?ex=1 HTTP/1.1\r\nContent-Length: 1\r\n\r\n1";
+  send(fd, req3, strlen(req3), 0);
+  REQUIRE(read_reply(fd).value().find("200 OK") != std::string::npos);
+
+  auto req4 = "GET /info HTTP/1.1\r\n\r\n";
+  send(fd, req4, strlen(req4), 0);
+  REQUIRE(read_reply(fd).value().find("200 OK") != std::string::npos);
+
+  auto req5 = "GET /config/policy HTTP/1.1\r\n\r\n";
+  send(fd, req5, strlen(req5), 0);
+  REQUIRE(read_reply(fd).value().find("200 OK") != std::string::npos);
+
+  auto req6 = "DELETE /key/a HTTP/1.1\r\n\r\n";
+  send(fd, req6, strlen(req6), 0);
+  REQUIRE(read_reply(fd).value().find("200 OK") != std::string::npos);
+
+  const std::string bad_req = "NOPE /key/a HTTP/1.1\r\n\r\n";
   send(fd, bad_req.data(), bad_req.size(), 0);
   auto bad = read_reply(fd);
   REQUIRE(bad.has_value());
-  CHECK(bad->rfind("-ERR", 0) == 0);
+  CHECK(bad->find("405") != std::string::npos);
 
   close(fd);
   stop_server(s);
@@ -140,25 +135,26 @@ TEST_CASE("integration: adversarial caps and churn",
   REQUIRE(fd >= 0);
 
   std::string big(1024 * 1024 + 8, 'x');
-  auto req = cmd({"SET", "big", big});
+  std::string req = "POST /key/big HTTP/1.1\r\nContent-Length: " + std::to_string(big.size()) + "\r\n\r\n" + big;
   send(fd, req.data(), req.size(), 0);
   auto rep = read_reply(fd);
   REQUIRE(rep.has_value());
-  CHECK(rep->rfind("-ERR", 0) == 0);
+  CHECK(rep->find("400") != std::string::npos);
 
   for (int i = 0; i < 500; ++i) {
-    auto sreq = cmd({"SET", "churn" + std::to_string(i), "val"});
+    std::string sreq = "POST /key/churn" + std::to_string(i) + " HTTP/1.1\r\nContent-Length: 3\r\n\r\nval";
     send(fd, sreq.data(), sreq.size(), 0);
     REQUIRE(read_reply(fd).has_value());
   }
-  auto ireq = cmd({"INFO"});
+
+  std::string ireq = "GET /info HTTP/1.1\r\n\r\n";
   send(fd, ireq.data(), ireq.size(), 0);
   auto info = read_reply(fd);
   REQUIRE(info.has_value());
   CHECK(info->find("evictions") != std::string::npos);
 
   for (int i = 0; i < 128; ++i) {
-    auto t = cmd({"SET", "ttl" + std::to_string(i), "v", "PX", "1"});
+    std::string t = "POST /key/ttl" + std::to_string(i) + "?px=1 HTTP/1.1\r\nContent-Length: 1\r\n\r\nv";
     send(fd, t.data(), t.size(), 0);
     REQUIRE(read_reply(fd).has_value());
   }
@@ -177,35 +173,34 @@ TEST_CASE("integration: AI artifact commands", "[integration][ai]") {
   int fd = connect_port(s.port);
   REQUIRE(fd >= 0);
 
-  auto send_cmd = [&](const std::vector<std::string> &args) {
-    auto req = cmd(args);
-    send(fd, req.data(), req.size(), 0);
-    return read_reply(fd);
-  };
-
-  auto put = send_cmd(
-      {"AI.PUT", "embedding", "emb:m:h:3:float",
-       "{\"artifact_type\":\"embedding\",\"owner\":\"vector\",\"schema_"
-       "version\":\"v1\",\"model_id\":\"m\",\"snapshot_epoch\":\"ep9\"}",
-       "abc"});
+  std::string p1 = "POST /ai/put/embedding/emb:m:h:3:float?meta={\"artifact_type\":\"embedding\",\"owner\":\"vector\",\"schema_version\":\"v1\",\"model_id\":\"m\",\"snapshot_epoch\":\"ep9\"} HTTP/1.1\r\nContent-Length: 3\r\n\r\nabc";
+  send(fd, p1.data(), p1.size(), 0);
+  auto put = read_reply(fd);
   REQUIRE(put.has_value());
-  REQUIRE(put->rfind("+OK", 0) == 0);
+  REQUIRE(put->find("200 OK") != std::string::npos);
 
-  auto get = send_cmd({"AI.GET", "emb:m:h:3:float"});
+  std::string g1 = "GET /ai/get/emb:m:h:3:float HTTP/1.1\r\n\r\n";
+  send(fd, g1.data(), g1.size(), 0);
+  auto get = read_reply(fd);
   REQUIRE(get.has_value());
-  CHECK(get->rfind("*2", 0) == 0);
+  CHECK(get->find("200 OK") != std::string::npos);
 
-  auto stats = send_cmd({"AI.STATS"});
+  std::string s1 = "GET /ai/stats HTTP/1.1\r\n\r\n";
+  send(fd, s1.data(), s1.size(), 0);
+  auto stats = read_reply(fd);
   REQUIRE(stats.has_value());
   CHECK(stats->find("dedup_hits") != std::string::npos);
 
-  auto inv = send_cmd({"AI.INVALIDATE", "EPOCH", "ep9"});
+  std::string i1 = "POST /ai/invalidate/EPOCH/ep9 HTTP/1.1\r\nContent-Length: 0\r\n\r\n";
+  send(fd, i1.data(), i1.size(), 0);
+  auto inv = read_reply(fd);
   REQUIRE(inv.has_value());
-  CHECK(inv->rfind(":1", 0) == 0);
+  CHECK(inv->find("1") != std::string::npos);
 
-  auto miss = send_cmd({"AI.GET", "emb:m:h:3:float"});
+  send(fd, g1.data(), g1.size(), 0);
+  auto miss = read_reply(fd);
   REQUIRE(miss.has_value());
-  CHECK(miss->rfind("$-1", 0) == 0);
+  CHECK(miss->find("404") != std::string::npos);
 
   close(fd);
   stop_server(s);

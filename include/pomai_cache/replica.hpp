@@ -6,7 +6,6 @@
 #include <vector>
 #include <iostream>
 #include "pomai_cache/engine_shard.hpp"
-#include "pomai_cache/resp.hpp"
 
 /**
  * Inspired by DragonflyDB's `dfly::Replica` (src/server/replica.h).

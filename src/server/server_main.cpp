@@ -1,7 +1,7 @@
 #include "pomai_cache/ai_cache.hpp"
 #include "pomai_cache/engine.hpp"
 #include "pomai_cache/engine_shard.hpp"
-#include "pomai_cache/resp.hpp"
+#include "pomai_cache/http.hpp"
 
 #include <algorithm>
 #include <arpa/inet.h>
@@ -33,7 +33,7 @@ bool parse_u64(std::string_view s, std::uint64_t &out) {
 }
 
 struct ClientState {
-  pomai_cache::RespParser parser;
+  pomai_cache::HttpParser parser;
   std::string out;
   std::string sending;
   int fd;
@@ -62,7 +62,7 @@ public:
     addr.sin_addr.s_addr = INADDR_ANY;
     addr.sin_port = htons(port_);
     if (bind(listen_fd, reinterpret_cast<sockaddr *>(&addr), sizeof(addr)) < 0) {
-      std::cerr << "Thread " << id_ << " bind failed\n";
+      std::cerr << "Worker " << id_ << " bind failed\n";
       return;
     }
     listen(listen_fd, 128);
@@ -101,7 +101,6 @@ public:
         if (fd == listen_fd) {
           int cfd = cqe->res;
           if (cfd >= 0) {
-            std::cout << "DEBUG: Accept on fd " << cfd << "\n";
             auto client = std::make_unique<ClientState>();
             client->fd = cfd;
             clients[cfd] = std::move(client);
@@ -119,11 +118,9 @@ public:
               close(fd);
               clients.erase(it);
             } else {
-              std::cout << "DEBUG: Received " << r << " bytes from fd " << fd << "\n";
               st.parser.feed(std::string_view(st.buf, r));
-              while (auto cmd = st.parser.next_command()) {
-                std::cout << "DEBUG: Command " << (cmd->empty() ? "" : std::string((*cmd)[0])) << "\n";
-                handle_command(st, *cmd);
+              while (auto req = st.parser.next_request()) {
+                handle_http_request(st, *req);
               }
               if (!st.is_sending && !st.out.empty()) {
                 st.is_sending = true;
@@ -175,133 +172,118 @@ private:
   }
 
 private:
-  void handle_command(ClientState& st, const std::vector<std::string>& cmd) {
-    if (cmd.empty()) return;
-    std::string c = upper(cmd[0]);
-    
-    if (c == "PING") {
-      st.out += pomai_cache::resp_simple("PONG");
-      return;
-    }
-
-    // Security (AUTH)
-    if (c == "AUTH") {
-      if (cmd.size() == 2 && cmd[1] == "pomai_admin") { // Simulating a simple admin password
-        st.out += pomai_cache::resp_simple("OK");
-      } else {
-        st.out += pomai_cache::resp_error("invalid password");
+  std::vector<std::string> split_path(const std::string& path) {
+    std::vector<std::string> parts;
+    std::size_t start = 0;
+    while (start < path.size()) {
+      if (path[start] == '/') {
+        start++;
+        continue;
       }
+      auto end = path.find('/', start);
+      if (end == std::string::npos) {
+        parts.push_back(path.substr(start));
+        break;
+      }
+      parts.push_back(path.substr(start, end - start));
+      start = end + 1;
+    }
+    return parts;
+  }
+
+  void handle_http_request(ClientState& st, const pomai_cache::HttpRequest& req) {
+    auto parts = split_path(req.path);
+    if (parts.empty()) {
+      st.out += pomai_cache::http_response(404, "Not Found", "Path missing");
       return;
     }
 
-    if (c == "INFO") {
+    std::string base = parts[0];
+
+    // INFO
+    if (base == "info" && req.method == "GET") {
       auto shards = pomai_cache::ShardSet::instance().all_shards();
       std::string combined;
-      for (auto* s : shards)
-        combined += s->engine().info();
-      st.out += pomai_cache::resp_bulk(combined);
+      for (auto* s : shards) combined += s->engine().info();
+      st.out += pomai_cache::http_response(200, "OK", combined);
       return;
     }
 
-    if (c == "CONFIG") {
-      if (cmd.size() >= 3 && upper(cmd[1]) == "GET") {
-        std::string param = upper(cmd[2]);
-        if (param == "POLICY") {
-          auto shards = pomai_cache::ShardSet::instance().all_shards();
-          std::string name = shards.empty() ? "unknown" : shards[0]->engine().policy().name();
-          st.out += pomai_cache::resp_array({
-            pomai_cache::resp_bulk("POLICY"),
-            pomai_cache::resp_bulk(name)
-          });
-        } else {
-          st.out += pomai_cache::resp_array({});
-        }
+    // CONFIG
+    if (base == "config" && req.method == "GET") {
+      if (parts.size() >= 2 && parts[1] == "policy") {
+        auto shards = pomai_cache::ShardSet::instance().all_shards();
+        std::string name = shards.empty() ? "unknown" : shards[0]->engine().policy().name();
+        st.out += pomai_cache::http_response(200, "OK", name);
       } else {
-        st.out += pomai_cache::resp_error("CONFIG subcommand not supported");
+        st.out += pomai_cache::http_response(400, "Bad Request", "CONFIG param not supported");
       }
       return;
     }
 
-    // Key-based routing
-    if (c == "GET" || c == "SET" || c == "DEL" || c == "EXPIRE" || c == "TTL") {
-      if (cmd.size() < 2) {
-        st.out += pomai_cache::resp_error("wrong number of arguments");
-        return;
-      }
-      std::string key(cmd[1]);
+    // KEY Ops: /key/<x>
+    if (base == "key" && parts.size() >= 2) {
+      std::string key = parts[1];
       auto* shard = pomai_cache::ShardSet::instance().get_shard(key);
       if (!shard) {
-        st.out += pomai_cache::resp_error("no shards available");
+        st.out += pomai_cache::http_response(503, "Service Unavailable", "No shards");
         return;
       }
       auto& engine = shard->engine();
 
-      if (c == "GET") {
+      if (req.method == "GET") {
         auto v = engine.get(key);
-        st.out += v ? pomai_cache::resp_bulk(std::string(v->begin(), v->end())) : pomai_cache::resp_null();
-      } else if (c == "SET") {
-        if (cmd.size() < 3) { st.out += pomai_cache::resp_error("SET key value"); return; }
-        std::vector<uint8_t> val(cmd[2].begin(), cmd[2].end());
-        std::optional<std::uint64_t> ttl_ms;
-        for (std::size_t i = 3; i + 1 < cmd.size(); i += 2) {
-          std::string opt = upper(cmd[i]);
-          std::uint64_t tv = 0;
-          if (!parse_u64(cmd[i + 1], tv)) continue;
-          if (opt == "PX") ttl_ms = tv;
-          else if (opt == "EX") ttl_ms = tv * 1000;
+        if (v) {
+          st.out += pomai_cache::http_response(200, "OK", std::string(v->begin(), v->end()));
+        } else {
+          st.out += pomai_cache::http_response(404, "Not Found", "Key not found");
         }
+      } else if (req.method == "POST") {
+        std::vector<uint8_t> val(req.body.begin(), req.body.end());
+        std::optional<std::uint64_t> ttl_ms;
+        
+        auto it = req.query_params.find("ex");
+        if (it != req.query_params.end()) {
+          std::uint64_t v = 0;
+          if (parse_u64(it->second, v)) ttl_ms = v * 1000;
+        }
+        it = req.query_params.find("px");
+        if (it != req.query_params.end()) {
+          std::uint64_t v = 0;
+          if (parse_u64(it->second, v)) ttl_ms = v;
+        }
+
         std::string set_err;
         if (engine.set(key, val, ttl_ms, "default", &set_err)) {
-          shard->journal().record(pomai_cache::OpCode::SET, cmd);
-          st.out += pomai_cache::resp_simple("OK");
+          std::vector<std::string> jcmd = {"SET", key, req.body};
+          if (ttl_ms) { jcmd.push_back("PX"); jcmd.push_back(std::to_string(*ttl_ms)); }
+          shard->journal().record(pomai_cache::OpCode::SET, jcmd);
+          st.out += pomai_cache::http_response(200, "OK", "OK");
         } else {
-          st.out += pomai_cache::resp_error(set_err);
+          st.out += pomai_cache::http_response(400, "Bad Request", set_err);
         }
-      } else if (c == "DEL") {
-        st.out += pomai_cache::resp_integer(engine.del({key}));
-      } else if (c == "EXPIRE") {
-        std::uint64_t ttl_s = 0;
-        if (cmd.size() == 3 && parse_u64(cmd[2], ttl_s)) {
-          st.out += pomai_cache::resp_integer(engine.expire(key, ttl_s));
-        } else st.out += pomai_cache::resp_error("invalid expire");
-      } else if (c == "TTL") {
-        auto t = engine.ttl(key);
-        st.out += pomai_cache::resp_integer(t ? *t : -2);
+      } else if (req.method == "DELETE") {
+        int d = engine.del({key});
+        st.out += pomai_cache::http_response(200, "OK", std::to_string(d));
+      } else {
+        st.out += pomai_cache::http_response(405, "Method Not Allowed", "Use GET, POST or DELETE");
       }
       return;
     }
 
-    // Multi-key routing (MGET)
-    if (c == "MGET") {
-      if (cmd.size() < 2) st.out += pomai_cache::resp_error("MGET key [key...]");
-      else {
-        std::vector<std::string> arr;
-        for (size_t i = 1; i < cmd.size(); ++i) {
-          std::string key(cmd[i]);
-          auto* shard = pomai_cache::ShardSet::instance().get_shard(key);
-          if (!shard) arr.push_back(pomai_cache::resp_null());
-          else {
-            auto v = shard->engine().get(key);
-            arr.push_back(v ? pomai_cache::resp_bulk(std::string(v->begin(), v->end())) : pomai_cache::resp_null());
-          }
-        }
-        st.out += pomai_cache::resp_array(arr);
-      }
-      return;
-    }
-
-    // AI commands routing
-    if (c.rfind("AI.", 0) == 0) {
-      if (c == "AI.STATS") {
+    // AI Operations
+    if (base == "ai" && parts.size() >= 2) {
+      std::string op = parts[1];
+      
+      if (op == "stats" && req.method == "GET") {
         auto shards = pomai_cache::ShardSet::instance().all_shards();
         std::string combined;
-        for (auto* s : shards)
-          combined += s->ai_cache().stats();
-        st.out += pomai_cache::resp_bulk(combined);
+        for (auto* s : shards) combined += s->ai_cache().stats();
+        st.out += pomai_cache::http_response(200, "OK", combined);
         return;
       }
-
-      if (c == "AI.COST.REPORT") {
+      
+      if (op == "cost_report" && req.method == "GET") {
         auto shards = pomai_cache::ShardSet::instance().all_shards();
         std::ostringstream os;
         double total_saved = 0;
@@ -317,22 +299,26 @@ private:
         os << "total_tokens_saved:" << total_tokens << "\n";
         os << "total_latency_saved_ms:" << total_latency << "\n";
         os << "total_hits:" << total_hits << "\n";
-        st.out += pomai_cache::resp_bulk(os.str());
+        st.out += pomai_cache::http_response(200, "OK", os.str());
         return;
       }
 
-      if (c == "AI.BUDGET" && cmd.size() >= 2) {
-        double budget = std::stod(cmd[1]);
-        auto shards = pomai_cache::ShardSet::instance().all_shards();
-        for (auto* s : shards)
-          s->ai_cache().set_budget(budget / static_cast<double>(shards.size()));
-        st.out += pomai_cache::resp_simple("OK");
+      if (op == "budget" && req.method == "POST") {
+        auto it = req.query_params.find("value");
+        if (it != req.query_params.end()) {
+          double budget = std::stod(it->second);
+          auto shards = pomai_cache::ShardSet::instance().all_shards();
+          for (auto* s : shards) s->ai_cache().set_budget(budget / static_cast<double>(shards.size()));
+          st.out += pomai_cache::http_response(200, "OK", "OK");
+        } else {
+          st.out += pomai_cache::http_response(400, "Bad Request", "Missing value");
+        }
         return;
       }
 
-      if (c == "AI.INVALIDATE" && cmd.size() >= 3) {
-        std::string subcmd = upper(cmd[1]);
-        std::string arg(cmd[2]);
+      if (op == "invalidate" && req.method == "POST" && parts.size() >= 4) {
+        std::string subcmd = upper(parts[2]);
+        std::string arg = parts[3];
         std::size_t total = 0;
         auto shards = pomai_cache::ShardSet::instance().all_shards();
         for (auto* s : shards) {
@@ -341,169 +327,108 @@ private:
           else if (subcmd == "PREFIX") total += s->ai_cache().invalidate_prefix(arg);
           else if (subcmd == "CASCADE") total += s->ai_cache().invalidate_cascade(arg);
         }
-        st.out += pomai_cache::resp_integer(static_cast<long long>(total));
+        st.out += pomai_cache::http_response(200, "OK", std::to_string(total));
         return;
       }
 
-      if (c == "AI.SIM.PUT" && cmd.size() >= 4) {
-        std::string key(cmd[1]);
-        auto* shard = pomai_cache::ShardSet::instance().get_shard(key);
-        if (!shard) { st.out += pomai_cache::resp_error("no shard"); return; }
-
-        const auto& vec_str = cmd[2];
-        std::vector<float> vec;
-        std::istringstream vss(vec_str);
-        float val;
-        while (vss >> val) { vec.push_back(val); if (vss.peek() == ',') vss.ignore(); }
-
-        std::vector<uint8_t> payload(cmd[3].begin(), cmd[3].end());
-        std::string meta_json = cmd.size() >= 5 ? cmd[4] : "{\"artifact_type\":\"embedding\",\"owner\":\"vector\",\"schema_version\":\"v1\"}";
-        std::string err;
-        if (shard->ai_cache().sim_put(key, vec, payload, meta_json, &err))
-          st.out += pomai_cache::resp_simple("OK");
-        else
-          st.out += pomai_cache::resp_error(err);
-        return;
-      }
-
-      if (c == "AI.SIM.GET" && cmd.size() >= 2) {
-        const auto& vec_str = cmd[1];
-        std::vector<float> query;
-        std::istringstream vss(vec_str);
-        float val;
-        while (vss >> val) { query.push_back(val); if (vss.peek() == ',') vss.ignore(); }
-
-        std::size_t top_k = 1;
-        float threshold = 0.9f;
-        for (std::size_t i = 2; i + 1 < cmd.size(); i += 2) {
-          std::string opt = upper(cmd[i]);
-          if (opt == "TOPK") top_k = std::stoull(cmd[i+1]);
-          else if (opt == "THRESHOLD") threshold = std::stof(cmd[i+1]);
+      if (op == "sim" && parts.size() >= 3) {
+        std::string subcmd = parts[2];
+        
+        if (subcmd == "put" && req.method == "POST" && parts.size() >= 4) {
+          std::string key = parts[3];
+          auto* shard = pomai_cache::ShardSet::instance().get_shard(key);
+          if (!shard) { st.out += pomai_cache::http_response(503, "Service Unavailable", "no shard"); return; }
+          
+          auto it = req.query_params.find("vec");
+          if (it == req.query_params.end()) { st.out += pomai_cache::http_response(400, "Bad Request", "missing vec"); return; }
+          
+          std::vector<float> vec;
+          std::istringstream vss(it->second);
+          float val;
+          while (vss >> val) { vec.push_back(val); if (vss.peek() == ',') vss.ignore(); }
+          
+          std::vector<uint8_t> payload(req.body.begin(), req.body.end());
+          
+          auto meta_it = req.query_params.find("meta");
+          std::string meta_json = meta_it != req.query_params.end() ? meta_it->second : "{\"artifact_type\":\"embedding\",\"owner\":\"vector\",\"schema_version\":\"v1\"}";
+          
+          std::string err;
+          if (shard->ai_cache().sim_put(key, vec, payload, meta_json, &err))
+            st.out += pomai_cache::http_response(200, "OK", "OK");
+          else
+            st.out += pomai_cache::http_response(400, "Bad Request", err);
+          return;
         }
-
-        auto shards = pomai_cache::ShardSet::instance().all_shards();
-        std::vector<std::string> arr;
-        for (auto* s : shards) {
-          auto results = s->ai_cache().sim_get(query, top_k, threshold);
-          for (const auto& r : results) {
-            arr.push_back(pomai_cache::resp_bulk(r.key));
-            arr.push_back(pomai_cache::resp_bulk(std::to_string(r.score)));
-            arr.push_back(pomai_cache::resp_bulk(
-                pomai_cache::AiArtifactCache::meta_to_json(r.value.meta)));
-            arr.push_back(pomai_cache::resp_bulk(
-                std::string(r.value.payload.begin(), r.value.payload.end())));
-          }
-        }
-        st.out += pomai_cache::resp_array(arr);
-        return;
-      }
-
-      if (c == "AI.STREAM.BEGIN" && cmd.size() >= 3) {
-        std::string key(cmd[1]);
-        auto* shard = pomai_cache::ShardSet::instance().get_shard(key);
-        if (!shard) { st.out += pomai_cache::resp_error("no shard"); return; }
-        std::string err;
-        if (shard->ai_cache().stream_begin(key, cmd[2], &err))
-          st.out += pomai_cache::resp_simple("OK");
-        else
-          st.out += pomai_cache::resp_error(err);
-        return;
-      }
-
-      if (c == "AI.STREAM.APPEND" && cmd.size() >= 3) {
-        std::string key(cmd[1]);
-        auto* shard = pomai_cache::ShardSet::instance().get_shard(key);
-        if (!shard) { st.out += pomai_cache::resp_error("no shard"); return; }
-        std::vector<uint8_t> chunk(cmd[2].begin(), cmd[2].end());
-        std::string err;
-        if (shard->ai_cache().stream_append(key, chunk, &err))
-          st.out += pomai_cache::resp_simple("OK");
-        else
-          st.out += pomai_cache::resp_error(err);
-        return;
-      }
-
-      if (c == "AI.STREAM.END" && cmd.size() >= 2) {
-        std::string key(cmd[1]);
-        auto* shard = pomai_cache::ShardSet::instance().get_shard(key);
-        if (!shard) { st.out += pomai_cache::resp_error("no shard"); return; }
-        std::string err;
-        if (shard->ai_cache().stream_end(key, &err))
-          st.out += pomai_cache::resp_simple("OK");
-        else
-          st.out += pomai_cache::resp_error(err);
-        return;
-      }
-
-      if (c == "AI.STREAM.GET" && cmd.size() >= 2) {
-        std::string key(cmd[1]);
-        auto* shard = pomai_cache::ShardSet::instance().get_shard(key);
-        if (!shard) { st.out += pomai_cache::resp_error("no shard"); return; }
-        auto v = shard->ai_cache().stream_get(key);
-        if (!v) st.out += pomai_cache::resp_null();
-        else {
-          std::vector<std::string> arr{
-            pomai_cache::resp_bulk(pomai_cache::AiArtifactCache::meta_to_json(v->meta)),
-            pomai_cache::resp_bulk(std::string(v->payload.begin(), v->payload.end()))
-          };
-          st.out += pomai_cache::resp_array(arr);
-        }
-        return;
-      }
-
-      if (cmd.size() < 2) {
-        st.out += pomai_cache::resp_error("AI commands require at least a key");
-        return;
-      }
-
-      std::string key;
-      if (c == "AI.PUT" && cmd.size() >= 3) key = std::string(cmd[2]);
-      else if (c == "AI.GET" && cmd.size() >= 2) key = std::string(cmd[1]);
-      else if (c == "AI.EXPLAIN" && cmd.size() >= 2) key = std::string(cmd[1]);
-      
-      if (!key.empty()) {
-        auto* shard = pomai_cache::ShardSet::instance().get_shard(key);
-        if (shard) {
-          auto& ai_cache = shard->ai_cache();
-          if (c == "AI.PUT") {
-            if (cmd.size() == 5) {
-              std::vector<uint8_t> payload(cmd[4].begin(), cmd[4].end());
-              std::string err;
-              if (ai_cache.put(std::string(cmd[1]), key, std::string(cmd[3]), payload, &err)) {
-                shard->journal().record(pomai_cache::OpCode::AI_PUT, cmd);
-                st.out += pomai_cache::resp_simple("OK");
-              } else st.out += pomai_cache::resp_error(err);
-            } else if (cmd.size() >= 7 && upper(cmd[5]) == "DEPENDS_ON") {
-              std::vector<uint8_t> payload(cmd[4].begin(), cmd[4].end());
-              std::vector<std::string> deps;
-              for (std::size_t i = 6; i < cmd.size(); ++i) deps.push_back(cmd[i]);
-              std::string err;
-              if (ai_cache.put_with_deps(std::string(cmd[1]), key, std::string(cmd[3]), payload, deps, &err)) {
-                shard->journal().record(pomai_cache::OpCode::AI_PUT, cmd);
-                st.out += pomai_cache::resp_simple("OK");
-              } else st.out += pomai_cache::resp_error(err);
-            } else {
-              st.out += pomai_cache::resp_error("AI.PUT requires: type key meta payload [DEPENDS_ON parent...]");
+        
+        if (subcmd == "get" && req.method == "GET") {
+          auto it = req.query_params.find("vec");
+          if (it == req.query_params.end()) { st.out += pomai_cache::http_response(400, "Bad Request", "missing vec"); return; }
+          std::vector<float> query;
+          std::istringstream vss(it->second);
+          float val;
+          while (vss >> val) { query.push_back(val); if (vss.peek() == ',') vss.ignore(); }
+          
+          std::size_t top_k = 1;
+          float threshold = 0.9f;
+          auto kt = req.query_params.find("topk");
+          if (kt != req.query_params.end()) top_k = std::stoull(kt->second);
+          auto tt = req.query_params.find("threshold");
+          if (tt != req.query_params.end()) threshold = std::stof(tt->second);
+          
+          auto shards = pomai_cache::ShardSet::instance().all_shards();
+          std::ostringstream arr;
+          for (auto* s : shards) {
+            auto results = s->ai_cache().sim_get(query, top_k, threshold);
+            for (const auto& r : results) {
+              arr << "key:" << r.key << " score:" << r.score << "\n";
+              arr << "meta:" << pomai_cache::AiArtifactCache::meta_to_json(r.value.meta) << "\n";
+              arr << "body:" << std::string(r.value.payload.begin(), r.value.payload.end()) << "\n";
             }
-          } else if (c == "AI.GET") {
-             auto v = ai_cache.get(key);
-             if (!v) st.out += pomai_cache::resp_null();
-             else {
-               std::vector<std::string> arr{
-                 pomai_cache::resp_bulk(pomai_cache::AiArtifactCache::meta_to_json(v->meta)),
-                 pomai_cache::resp_bulk(std::string(v->payload.begin(), v->payload.end()))
-               };
-               st.out += pomai_cache::resp_array(arr);
-             }
-          } else if (c == "AI.EXPLAIN") {
-            st.out += pomai_cache::resp_bulk(ai_cache.explain(key));
           }
-        } else st.out += pomai_cache::resp_error("no shard for AI key");
-      } else st.out += pomai_cache::resp_error("unsupported or malformed AI command");
-      return;
+          st.out += pomai_cache::http_response(200, "OK", arr.str());
+          return;
+        }
+      }
+      
+      if (op == "put" && req.method == "POST" && parts.size() >= 4) {
+        std::string type = parts[2];
+        std::string key = parts[3];
+        
+        auto* shard = pomai_cache::ShardSet::instance().get_shard(key);
+        if (!shard) { st.out += pomai_cache::http_response(503, "Service Unavailable", "no shard"); return; }
+        
+        std::vector<uint8_t> payload(req.body.begin(), req.body.end());
+        auto it = req.query_params.find("meta");
+        std::string meta = it != req.query_params.end() ? it->second : "{}";
+        
+        std::string err;
+        if (shard->ai_cache().put(type, key, meta, payload, &err)) {
+          std::vector<std::string> jcmd = {"AI.PUT", type, key, meta, req.body};
+          shard->journal().record(pomai_cache::OpCode::AI_PUT, jcmd);
+          st.out += pomai_cache::http_response(200, "OK", "OK");
+        } else {
+          st.out += pomai_cache::http_response(400, "Bad Request", err);
+        }
+        return;
+      }
+      
+      if (op == "get" && req.method == "GET" && parts.size() >= 3) {
+        std::string key = parts[2];
+        auto* shard = pomai_cache::ShardSet::instance().get_shard(key);
+        if (!shard) { st.out += pomai_cache::http_response(503, "Service Unavailable", "no shard"); return; }
+        
+        auto v = shard->ai_cache().get(key);
+        if (!v) {
+          st.out += pomai_cache::http_response(404, "Not Found", "");
+        } else {
+          std::string resp_body = pomai_cache::AiArtifactCache::meta_to_json(v->meta) + "\n" + std::string(v->payload.begin(), v->payload.end());
+          st.out += pomai_cache::http_response(200, "OK", resp_body);
+        }
+        return;
+      }
     }
 
-    st.out += pomai_cache::resp_error("unknown command");
+    st.out += pomai_cache::http_response(400, "Bad Request", "Unknown command");
   }
 
   int port_;
@@ -515,7 +440,6 @@ private:
 
 int main(int argc, char **argv) {
   int port = 6379;
-  int threads = std::thread::hardware_concurrency();
   std::size_t memory_limit = 128 * 1024 * 1024;
   std::string data_dir = "./data";
 
@@ -523,23 +447,18 @@ int main(int argc, char **argv) {
     std::string a = argv[i];
     if (a == "--port" && i + 1 < argc) port = std::stoi(argv[++i]);
     else if (a == "--memory" && i + 1 < argc) memory_limit = std::stoull(argv[++i]);
-    else if (a == "--threads" && i + 1 < argc) threads = std::stoi(argv[++i]);
   }
 
   pomai_cache::EngineConfig cfg;
-  cfg.memory_limit_bytes = memory_limit / threads;
+  cfg.memory_limit_bytes = memory_limit; // No division because it is single-threaded
   cfg.data_dir = data_dir;
 
-  std::cout << "Starting PomaiCache with " << threads << " cores...\n";
-  std::vector<std::thread> workers;
-  for (int i = 0; i < threads; ++i) {
-    workers.emplace_back([port, cfg, i]() {
-      UringWorker(port, cfg, i).run();
-    });
-  }
+  std::cout << "Starting PomaiCache on single core...\n";
 
   std::signal(SIGINT, on_sigint);
-  for (auto& t : workers) t.join();
+  
+  // Single-threaded so just call run() on main thread
+  UringWorker(port, cfg, 0).run();
 
   return 0;
 }
