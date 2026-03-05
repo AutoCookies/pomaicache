@@ -1,0 +1,7 @@
+{
+  "prompt_cache_workloads": [
+    {"name":"chatty_short_sessions","ops_s":142.875,"p50_us":5932.13,"p95_us":13378.5,"p99_us":20634.9,"hit_rate":0.143678,"avg_savings_ratio":0.00735079},
+    {"name":"long_lived_system_prompts","ops_s":67.667,"p50_us":14609.5,"p95_us":17571,"p99_us":24018.2,"hit_rate":0.569869,"avg_savings_ratio":0.0215384},
+    {"name":"embedded_api_hot_prompts","ops_s":137.045,"p50_us":8095.73,"p95_us":13802.2,"p99_us":14491.8,"hit_rate":0,"avg_savings_ratio":0}
+  ]
+}

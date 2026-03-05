@@ -7,10 +7,6 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 include_directories(include third_party)
 
-set(PA_OVERRIDE ON)
-set(PA_BUILD_TESTS OFF CACHE BOOL "Disable palloc tests for embedded pomai_cache" FORCE)
-add_subdirectory(third_party/palloc)
-
 add_library(pomaicache SHARED
   src/engine/engine.cpp
   src/engine/ssd_store.cpp
@@ -28,8 +24,6 @@ add_library(pomaicache SHARED
   src/bindings/c_api.cc
 )
 
-target_link_libraries(pomaicache PUBLIC palloc)
-
 include(CTest)
 if(BUILD_TESTING)
   add_library(mini_catch_main third_party/catch2/catch_main.cpp)
@@ -40,8 +34,12 @@ if(BUILD_TESTING)
   add_executable(test_ai_cache tests/test_ai_cache.cpp)
   target_link_libraries(test_ai_cache PRIVATE pomaicache mini_catch_main)
 
+  add_executable(test_prompt_cache tests/test_prompt_cache.cpp)
+  target_link_libraries(test_prompt_cache PRIVATE pomaicache mini_catch_main)
+
   add_test(NAME test_engine COMMAND test_engine)
   add_test(NAME test_ai_cache COMMAND test_ai_cache)
+  add_test(NAME test_prompt_cache COMMAND test_prompt_cache)
 
   if(NOT WIN32)
     add_executable(test_integration tests/test_integration.cpp)

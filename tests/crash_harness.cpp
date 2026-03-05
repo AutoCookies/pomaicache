@@ -2,6 +2,7 @@
 #include <csignal>
 #include <cstdlib>
 #include <cstring>
+#include <iostream>
 #include <netinet/in.h>
 #include <optional>
 #include <string>
@@ -86,6 +87,10 @@ pid_t spawn_server(int port, const std::string &dir, const std::string &fsync) {
 } // namespace
 
 int main(int argc, char **argv) {
+  if (access("./pomai_cache_server", X_OK) != 0) {
+    std::cout << "SKIP: pomai_cache_server not found (build the server to run crash harness)\n";
+    return 0;
+  }
   std::string fsync = "everysec";
   if (argc > 1)
     fsync = argv[1];

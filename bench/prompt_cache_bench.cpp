@@ -213,9 +213,15 @@ run_prompt_workload_embedded(const std::string &name,
 }
 
 int main(int argc, char **argv) {
+  bool quick = false;
   std::string json_out = "prompt_cache_bench.json";
-  if (argc > 1)
-    json_out = argv[1];
+  for (int i = 1; i < argc; ++i) {
+    if (std::string(argv[i]) == "--quick")
+      quick = true;
+    else
+      json_out = argv[i];
+  }
+  const int ops_per_workload = quick ? 500 : 5000;
 
   EngineConfig cfg;
   cfg.memory_limit_bytes = 64 * 1024 * 1024;
@@ -234,19 +240,22 @@ int main(int argc, char **argv) {
   PromptCacheManager pcm(engine, ai, pcfg);
 
   std::cout << std::fixed << std::setprecision(2);
-  std::cout << "Embedded token/prompt cache benchmark (in-process, no network)\n";
+  std::cout << "Embedded token/prompt cache benchmark (in-process, no network)";
+  if (quick)
+    std::cout << " [--quick]";
+  std::cout << "\n";
 
   std::vector<PromptBenchResult> results;
   results.push_back(run_prompt_workload("chatty_short_sessions",
                                         pcm,
-                                        5000,
+                                        ops_per_workload,
                                         200,   // hot prefixes
                                         128,   // max tokens per prompt
                                         0.30   // writes
                                         ));
   results.push_back(run_prompt_workload("long_lived_system_prompts",
                                         pcm,
-                                        5000,
+                                        ops_per_workload,
                                         50,    // fewer prefixes, more reuse
                                         256,   // max tokens per prompt
                                         0.10   // mostly reads
@@ -259,7 +268,7 @@ int main(int argc, char **argv) {
   pomaicache::PomaiCache cache(embedded_cfg);
   results.push_back(run_prompt_workload_embedded("embedded_api_hot_prompts",
                                                  cache,
-                                                 5000,
+                                                 ops_per_workload,
                                                  100,
                                                  256,
                                                  0.25));
