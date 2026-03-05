@@ -1,0 +1,11 @@
+{
+  "workloads": [
+    {"name":"embedding_zipf","ops_s":459.52,"p50_us":130.28,"p95_us":11175.92,"p99_us":12889.39,"p999_us":14281.39,"hit_rate":0.82},
+    {"name":"prompt_response_churn","ops_s":155.11,"p50_us":842.28,"p95_us":21994.37,"p99_us":25153.57,"p999_us":45459.81,"hit_rate":0.73},
+    {"name":"rerank_ttl_storm","ops_s":323.85,"p50_us":549.67,"p95_us":10760.80,"p99_us":11009.46,"p999_us":11728.75,"hit_rate":0.75},
+    {"name":"mixed_rag_pipeline","ops_s":51.31,"p50_us":8994.29,"p95_us":61316.55,"p99_us":69901.89,"p999_us":113447.43,"hit_rate":0.74}
+  ],
+  "ssd_mb_s": 0.0,
+  "engine_ctor_ms": 0.18,
+  "dedup_ratio": 0.0
+}
